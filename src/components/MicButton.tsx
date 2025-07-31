@@ -186,6 +186,10 @@ export function MicButton({ onTranscriptUpdate, onMicStateChange }: MicButtonPro
       
       setIsAISpeaking(false);
       
+      // Reset services for continuous conversation
+      socketService.resetForContinuousConversation();
+      audioService.resetForContinuousConversation();
+      
       // Clear speech recognition history after AI response to prepare for next query
       speechRecognition.clearHistory();
       
@@ -342,6 +346,10 @@ export function MicButton({ onTranscriptUpdate, onMicStateChange }: MicButtonPro
           
           // Only proceed if connection is established
           if (socketService.isConnected()) {
+            // Reset services for continuous conversation
+            socketService.resetForContinuousConversation();
+            audioService.resetForContinuousConversation();
+            
             // Start recording
             await socketService.startRecording();
             

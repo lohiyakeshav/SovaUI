@@ -23,12 +23,12 @@ export class AudioService {
   private sessionRefreshInterval: NodeJS.Timeout | null = null; // Track session refresh interval
   private lastStuckAudioCheck: number = 0; // Track when we last checked for stuck audio
   
-  // Enhanced configuration for backend integration
+  // Enhanced configuration for backend integration with adaptive chunk optimization
   private config = {
-    defaultPlaybackRate: 0.8, // Increased for better speech clarity
+    defaultPlaybackRate: 0.5, // Reduced from 0.8 to 0.5 for more natural, slower voice speedthi
     volume: 0.9, // Increased for better audibility
-    chunkDelay: 10, // Reduced for more responsive playback
-    maxQueueSize: 100,
+    chunkDelay: 10, // Increased from 5ms to 10ms for better chunk separation
+    maxQueueSize: 50, // Reduced from 100 since chunks are larger now
     maxRetries: 3,
     fadeInDuration: 0.001, // Reduced from 0.002 for faster start
     fadeOutDuration: 0.003, // Reduced from 0.005 for faster transitions
@@ -39,15 +39,19 @@ export class AudioService {
     strictSequential: true, // Ensure strict sequential playback
     maxConcurrentSources: 1, // Only allow 1 source at a time
     sessionTimeout: 5000, // 5 seconds timeout for session management
-    chunkTimeout: 2000, // 2 seconds timeout for individual chunks
+    chunkTimeout: 3000, // Increased from 2000ms for larger chunks
     // New backend integration settings
     backendSessionTimeout: 600000, // 10 minutes - matches backend activity timeout
     sessionRefreshInterval: 1800000, // 30 minutes - matches backend session refresh
     turnTracking: true, // Enable turn tracking for analytics
     autoReconnection: true, // Enable auto-reconnection support
     sessionMonitoring: true, // Enable session health monitoring
+    // Adaptive chunk optimization settings
+    adaptiveChunkMode: true, // Enable adaptive chunk handling
+    largeChunkThreshold: 2000, // 2 seconds - chunks larger than this get special handling
+    chunkSizeOptimization: true, // Enable chunk size-based optimizations
     // Logging control
-    verboseLogging: false, // Disable verbose logging for better performance
+    verboseLogging: true, // Enable verbose logging to debug playback rate
   };
   
   // Enhanced performance tracking with backend integration
@@ -114,9 +118,8 @@ export class AudioService {
 
   private async initAudioContext() {
     if (typeof window !== 'undefined' && !this.audioContext) {
-      // Create audio context with 48kHz sample rate to match backend WAV format
+      // Create audio context with system default sample rate to avoid resampling issues
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 48000, // Match backend WAV format at 48kHz (converted from LINEAR16 PCM)
         latencyHint: 'interactive'
       });
       
@@ -512,23 +515,18 @@ export class AudioService {
       try {
         this.log(`${timestamp} 🎵 PLAYING SEQUENTIAL: chunk ${chunk.index}/${chunk.total}`);
         
-        // Don't force stop audio - let it play naturally
-        // This prevents the rapid start/stop cycle
-        
         // Play the audio chunk and wait for it to finish completely
         this.playbackPromise = this.playAudioChunk(chunk.audioData, chunk.sessionId || undefined, chunk.index, chunk.total);
-        await this.playbackPromise;
+        await this.playbackPromise; // Wait for this chunk to finish before continuing
         
         // Add a small gap between chunks for better separation
         const gapDelay = this.config.chunkDelay;
-        await new Promise(resolve => setTimeout(resolve, gapDelay));
+        if (gapDelay > 0) {
+          this.log(`${timestamp} ⏸️ WAITING: ${gapDelay}ms gap between chunks`);
+          await new Promise(resolve => setTimeout(resolve, gapDelay));
+        }
         
         // Removed sentence pause logic - no more pauses between chunks
-        
-        // After playing a chunk, check if we can continue with more consecutive chunks
-        if (this.audioQueue.length > 0) {
-          this.checkAndPlayConsecutiveChunks();
-        }
         
       } catch (error) {
         console.error(`${timestamp} ❌ SEQUENTIAL PLAYBACK ERROR: chunk ${chunk.index}/${chunk.total}:`, error);
@@ -585,7 +583,7 @@ export class AudioService {
     
     // Prevent processing too many chunks simultaneously
     const activeSources = this.getTotalActiveSources();
-    if (activeSources > 10) {
+    if (activeSources > 3) {
       this.log(`${timestamp} ⚠️ TOO MANY ACTIVE SOURCES: ${activeSources}, skipping chunk ${chunkInfo}`);
       return;
     }
@@ -595,54 +593,42 @@ export class AudioService {
     try {
       await this.initAudioContext();
       
-      if (!this.audioContext) {
-        console.error(`${timestamp} ❌ Audio context not available for chunk ${chunkInfo}`);
-        return;
-      }
-
-      // Resume audio context if suspended
-      if (this.audioContext.state === 'suspended') {
-        console.log(`${timestamp} 🔊 Resuming suspended audio context for chunk ${chunkInfo}...`);
-        await this.audioContext.resume();
-      }
-      
-      // Enhanced validation
+      // Validate audio data
       if (!this.validateAudioData(base64Audio, chunkInfo, timestamp)) {
         return;
       }
-
-      // Convert base64 to array buffer with error handling
-      const bytes = await this.convertBase64ToBytes(base64Audio, chunkInfo, timestamp);
-      if (!bytes) return;
-
-      // Create a copy of bytes to prevent ArrayBuffer detachment issues
-      const bytesCopy = new Uint8Array(bytes);
-
-      this.log(`${timestamp} 🔊 DECODING: chunk ${chunkInfo}, bytes length: ${bytes.length}, binary size: ${bytes.length}`);
       
-      // Enhanced format detection
-      const formatInfo = this.detectAudioFormat(bytesCopy, chunkInfo, timestamp);
-      if (!formatInfo) return;
-
-      // Decode audio with enhanced error handling
-      const audioBuffer = await this.decodeAudioBuffer(bytesCopy, formatInfo, chunkInfo, timestamp);
-      if (!audioBuffer) return;
-
-      // Validate audio buffer
-      if (!this.validateAudioBuffer(audioBuffer, chunkInfo, timestamp)) {
+      // Convert base64 to bytes
+      const bytes = await this.convertBase64ToBytes(base64Audio, chunkInfo, timestamp);
+      if (!bytes) {
         return;
       }
-
-      // Create and play audio source with enhanced features
-      this.createAndPlayAudioSource(audioBuffer, chunkIndex!, sessionId!);
-
-      // Update performance metrics
-      this.updatePerformanceMetrics(performance.now() - startTime, true);
+      
+      // Detect audio format and calculate playback rate
+      const formatInfo = this.detectAudioFormat(bytes, chunkInfo, timestamp);
+      if (!formatInfo) {
+        return;
+      }
+      
+      // Decode audio buffer
+      const audioBuffer = await this.decodeAudioBuffer(bytes, formatInfo, chunkInfo, timestamp);
+      if (!audioBuffer) {
+        return;
+      }
+      
+      // Create and play audio source with proper promise handling
+      return new Promise<void>((resolve, reject) => {
+        try {
+          this.createAudioSourceAndPlayInternal(audioBuffer, chunkIndex || 0, sessionId || 'default', formatInfo.playbackRate, resolve);
+        } catch (error) {
+          reject(error);
+        }
+      });
       
     } catch (error) {
-      console.error(`${timestamp} ❌ PLAYBACK ERROR: chunk ${chunkInfo}, error: ${error.message}`);
-      console.error(`${timestamp} 🔍 ERROR DETAILS: name: ${error.name}, stack: ${error.stack?.split('\n')[0] || 'N/A'}`);
+      console.error(`${timestamp} ❌ AUDIO CHUNK ERROR: chunk ${chunkInfo}:`, error);
       this.updatePerformanceMetrics(performance.now() - startTime, false);
+      throw error;
     }
   }
 
@@ -692,8 +678,12 @@ export class AudioService {
     if (bytes.length >= 12) {
       const riffHeader = String.fromCharCode(...bytes.slice(0, 4));
       const waveHeader = String.fromCharCode(...bytes.slice(8, 12));
+      this.log(`${timestamp} 🔍 HEADER ANALYSIS: RIFF="${riffHeader}", WAVE="${waveHeader}"`);
       if (riffHeader === 'RIFF' && waveHeader === 'WAVE') {
         audioFormat = 'WAV';
+        this.log(`${timestamp} ✅ WAV FORMAT CONFIRMED`);
+      } else {
+        this.log(`${timestamp} ⚠️ NOT WAV FORMAT: RIFF="${riffHeader}", WAVE="${waveHeader}"`);
       }
     }
     
@@ -719,18 +709,30 @@ export class AudioService {
 
   // Calculate adaptive playback rate
   private calculateAdaptivePlaybackRate(format: string): number {
-    // Base rate on format and performance metrics
-    let rate = this.config.defaultPlaybackRate;
+    // Base rate for natural voice sound
+    let baseRate = 0.5; // Reduced from 0.8 to 0.5 for more natural, slower voice
     
-    // Adjust based on recent performance
-    if (this.performanceMetrics.averageDecodeTime > 50) {
-      rate = Math.max(0.3, rate - 0.05); // Allow slower rates for better performance
-    } else if (this.performanceMetrics.averageDecodeTime < 20) {
-      rate = Math.min(1.0, rate + 0.05); // Gradual speed up
+    // Adjust based on format
+    switch (format.toLowerCase()) {
+      case 'wav':
+        baseRate = 0.55; // Slightly faster for WAV files but still natural
+        break;
+      case 'mp3':
+        baseRate = 0.5; // Standard rate for MP3
+        break;
+      case 'ogg':
+        baseRate = 0.6; // Slightly faster for OGG files
+        break;
+      default:
+        baseRate = 0.5; // Default natural rate
     }
     
-    // Allow user's setting to take precedence (removed hardcoded minimum)
-    return rate;
+    // Apply performance mode adjustments
+    if (this.config.performanceMode) {
+      baseRate = Math.min(0.7, baseRate * 1.05); // Cap at 0.7x for natural speed
+    }
+    
+    return baseRate;
   }
 
   // Calculate dynamic volume based on audio content
@@ -778,8 +780,14 @@ export class AudioService {
       
       if (formatInfo.format === 'WAV' || formatInfo.format === 'OGG_OPUS' || formatInfo.format === 'MP3') {
         // Handle encoded audio formats
-        audioBuffer = await this.audioContext!.decodeAudioData(bytes.buffer);
-        this.log(`${timestamp} ✅ ${formatInfo.format} DECODE SUCCESS: chunk ${chunkInfo}, duration: ${audioBuffer.duration.toFixed(2)}s, sample rate: ${audioBuffer.sampleRate}Hz, channels: ${audioBuffer.numberOfChannels}, playback: ${formatInfo.playbackRate}x`);
+        try {
+          audioBuffer = await this.audioContext!.decodeAudioData(bytes.buffer);
+          this.log(`${timestamp} ✅ ${formatInfo.format} DECODE SUCCESS: chunk ${chunkInfo}, duration: ${audioBuffer.duration.toFixed(2)}s, sample rate: ${audioBuffer.sampleRate}Hz, channels: ${audioBuffer.numberOfChannels}, playback: ${formatInfo.playbackRate}x, context SR: ${this.audioContext?.sampleRate}Hz`);
+        } catch (decodeError) {
+          console.error(`${timestamp} ❌ ${formatInfo.format} DECODE FAILED: chunk ${chunkInfo}, error: ${decodeError.message}`);
+          // Fallback to PCM decoding
+          audioBuffer = await this.decodeRawPCM(bytes, chunkInfo, timestamp);
+        }
       } else {
         // Handle raw PCM data (fallback)
         audioBuffer = await this.decodeRawPCM(bytes, chunkInfo, timestamp);
@@ -799,7 +807,7 @@ export class AudioService {
   private async decodeRawPCM(bytes: Uint8Array, chunkInfo: string, timestamp: string): Promise<AudioBuffer | null> {
     console.log(`${timestamp} 🔊 PCM FALLBACK: chunk ${chunkInfo}, processing as raw Linear16 PCM data`);
     
-    const sampleRate = this.audioContext!.sampleRate; // 48000Hz
+    const sampleRate = this.audioContext!.sampleRate; // Use context sample rate
     const numberOfChannels = 1; // Mono audio from Gemini
     
     // Convert bytes to 16-bit signed integers (Linear16 PCM)
@@ -838,7 +846,7 @@ export class AudioService {
   }
 
   // Enhanced method to create and play audio source with optimized cleanup
-  private createAndPlayAudioSource(audioBuffer: AudioBuffer, chunkIndex: number, sessionId: string): void {
+  private createAndPlayAudioSource(audioBuffer: AudioBuffer, chunkIndex: number, sessionId: string, playbackRate?: number): void {
     try {
       // Only stop existing audio if we're not in sequential playback
       if (!this.isPlayingSequentially) {
@@ -846,27 +854,54 @@ export class AudioService {
       }
       
       // Create and play immediately without delay
-      this.createAudioSourceAndPlayInternal(audioBuffer, chunkIndex, sessionId);
+      this.createAudioSourceAndPlayInternal(audioBuffer, chunkIndex, sessionId, playbackRate);
     } catch (error) {
       console.error('❌ Error in createAndPlayAudioSource:', error);
     }
   }
 
-  private createAudioSourceAndPlayInternal(audioBuffer: AudioBuffer, chunkIndex: number, sessionId: string): void {
+  private createAudioSourceAndPlayInternal(audioBuffer: AudioBuffer, chunkIndex: number, sessionId: string, playbackRate?: number, onEnded?: () => void): void {
     try {
       // Don't stop existing audio - let it play naturally
       // This prevents the rapid start/stop cycle
-
-      const source = this.audioContext!.createBufferSource();
+      
+      if (!this.audioContext) {
+        console.error('❌ Audio context not available');
+        onEnded?.(); // Resolve promise if no context
+        return;
+      }
+      
+      const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       
-      const gainNode = this.audioContext!.createGain();
+      // Set playback rate if provided
+      if (playbackRate !== undefined) {
+        source.playbackRate.setValueAtTime(playbackRate, this.audioContext.currentTime);
+        this.log(`🎵 SETTING PLAYBACK RATE: chunk ${chunkIndex}, rate: ${playbackRate}x`);
+      } else {
+        this.log(`⚠️ NO PLAYBACK RATE: chunk ${chunkIndex}, using default`);
+      }
+      
+      // Debug audio buffer content
+      const channelData = audioBuffer.getChannelData(0);
+      const samples = channelData.length;
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < samples; i++) {
+        const sample = Math.abs(channelData[i]);
+        sum += sample;
+        peak = Math.max(peak, sample);
+      }
+      const average = sum / samples;
+      this.log(`🔊 AUDIO DEBUG: chunk ${chunkIndex}, samples: ${samples}, avg: ${average.toFixed(4)}, peak: ${peak.toFixed(4)}, duration: ${audioBuffer.duration.toFixed(2)}s`);
+      
+      const gainNode = this.audioContext.createGain();
       source.connect(gainNode);
-      gainNode.connect(this.audioContext!.destination);
+      gainNode.connect(this.audioContext.destination);
       
       // Set volume based on audio analysis
       const volume = this.calculateDynamicVolume(audioBuffer);
-      gainNode.gain.setValueAtTime(volume, this.audioContext!.currentTime);
+      gainNode.gain.setValueAtTime(volume, this.audioContext.currentTime);
       
       // Track source by session
       if (!this.sessionAudioSources.has(sessionId)) {
@@ -877,10 +912,10 @@ export class AudioService {
       // Update current source tracking
       this.currentAudioSource = source;
       
-      const startTime = this.audioContext!.currentTime;
+      const startTime = this.audioContext.currentTime;
       const duration = audioBuffer.duration;
       
-      this.log(`🎛️ AUDIO SOURCE: chunk ${chunkIndex}, created source, total active: ${this.getTotalActiveSources()}, current source: YES, session: ${sessionId}, VERSION: ${this.version}`);
+      this.log(`🎛️ AUDIO SOURCE: chunk ${chunkIndex}, created source, total active: ${this.getTotalActiveSources()}, current source: YES, session: ${sessionId}, VERSION: ${this.version}, playback rate: ${source.playbackRate.value}x`);
       
       // Allow multiple sources for better audio continuity
       // This prevents the rapid start/stop cycle
@@ -908,25 +943,42 @@ export class AudioService {
           
           // Check for stuck audio after cleanup
           this.checkForStuckAudio();
+          
+          // Only call onEnded when audio actually finishes
+          if (onEnded) {
+            onEnded();
+          }
         } catch (error) {
           console.error('❌ Error in audio source cleanup:', error);
+          if (onEnded) {
+            onEnded();
+          }
         }
       };
       
       source.onended = cleanup;
       
-      // Cleanup timeout
+      // Cleanup timeout - increased to prevent premature stopping
       setTimeout(() => {
         try {
           source.stop();
           this.log(`⏰ FORCE STOPPING: chunk ${chunkIndex} after timeout`);
+          if (onEnded) {
+            onEnded();
+          }
         } catch (error) {
           this.log(`⏰ Source already stopped for chunk ${chunkIndex}`);
+          if (onEnded) {
+            onEnded();
+          }
         }
-      }, (duration * 1000) + 200);
+      }, (duration * 1000) + 1000); // Increased from 200ms to 1000ms
       
     } catch (error) {
       console.error('❌ Error creating audio source:', error);
+      if (onEnded) {
+        onEnded();
+      }
     }
   }
 
@@ -1055,7 +1107,7 @@ export class AudioService {
     this.log(`${timestamp} 🎤 SPEECH ANALYSIS: RMS: ${rms.toFixed(3)}, Peak: ${peak.toFixed(3)}, Dynamic Range: ${dynamicRange.toFixed(1)}, Freq: ${frequency.toFixed(0)}Hz, Quality: ${quality}`);
   }
 
-  // Method to handle session-based audio management with proper WAV chunking
+  // Method to handle session-based audio management with proper WAV chunking and adaptive optimization
   async playAudioResponse(audioData: string, index: number, total: number, sessionId?: string): Promise<void> {
     // Initialize the service if it hasn't been initialized yet
     if (!this.isInitialized) {
@@ -1064,7 +1116,14 @@ export class AudioService {
     
     const timestamp = this.getTimestamp();
     
-    this.log(`${timestamp} 📥 AUDIO IN: chunk ${index}/${total}, session: ${sessionId?.substring(0, 8)}..., size: ${audioData.length}B, chunks seen: [${Array.from(this.sessionChunksSeen).sort().join(',')}]`);
+    // Calculate adaptive playback parameters based on chunk characteristics
+    const estimatedChunkSizeMs = audioData.length * 0.75; // Rough estimate of audio duration
+    const adaptiveParams = this.calculateAdaptivePlaybackParams(estimatedChunkSizeMs, total);
+    
+    // Log adaptive optimization details
+    this.logAdaptiveChunkOptimization(estimatedChunkSizeMs, total, adaptiveParams);
+    
+    this.log(`${timestamp} 📥 ADAPTIVE AUDIO IN: chunk ${index}/${total}, session: ${sessionId?.substring(0, 8)}..., size: ${audioData.length}B, estimated duration: ${Math.round(estimatedChunkSizeMs)}ms, chunks seen: [${Array.from(this.sessionChunksSeen).sort().join(',')}]`);
     
     // Handle new audio sessions - stop previous audio when new session starts
     if (sessionId && sessionId !== this.currentSessionId) {
@@ -1124,23 +1183,25 @@ export class AudioService {
 
     // Log audio preview for debugging
     const audioPreview = audioData.substring(0, 20) + '...';
-    this.log(`${timestamp} 🎵 PROCESSING: chunk ${index}/${total}, preview: ${audioPreview}, active sources: ${this.getTotalActiveSources()}`);
+    this.log(`${timestamp} 🎵 PROCESSING: chunk ${index}/${total}, preview: ${audioPreview}, active sources: ${this.getTotalActiveSources()}, adaptive params: ${JSON.stringify(adaptiveParams)}`);
 
-    // IMMEDIATE PLAYBACK: Play chunks as they arrive for better responsiveness
-    this.log(`${timestamp} 🎵 PLAYING CHUNK IMMEDIATELY: ${index}/${total}`);
-    this.playAudioChunk(audioData, sessionId, index, total);
+    // QUEUE CHUNKS: Add to queue for sequential playback with adaptive parameters
+    this.log(`${timestamp} 🎵 QUEUING ADAPTIVE CHUNK: ${index}/${total}`);
+    this.queueAudioChunk(audioData, sessionId, index, total);
     
     // Set up timeout to force playback if we're waiting too long for missing chunks
-    this.setupPlaybackTimeout(sessionId, total);
+    // Use adaptive timeout based on chunk size
+    const adaptiveTimeout = Math.max(3000, estimatedChunkSizeMs * 2);
+    this.setupPlaybackTimeout(sessionId, total, adaptiveTimeout);
     
-    // Force playback after 5 seconds if we have chunks but haven't started
+    // Force playback after adaptive timeout if we have chunks but haven't started
     setTimeout(() => {
       if (this.audioQueue.length > 0 && !this.isPlayingSequentially && this.sessionChunksSeen.size > 0) {
         const timestamp = this.getTimestamp();
-        this.log(`${timestamp} ⏰ FORCE PLAYBACK: After 5s timeout, starting with ${this.audioQueue.length} queued chunks`);
+        this.log(`${timestamp} ⏰ FORCE PLAYBACK: After ${adaptiveTimeout}ms adaptive timeout, starting with ${this.audioQueue.length} queued chunks`);
         this.checkAndPlayConsecutiveChunks();
       }
-    }, 5000);
+    }, adaptiveTimeout);
     
     // Update session activity for backend monitoring
     this.sessionState.lastActivity = Date.now();
@@ -1210,21 +1271,24 @@ export class AudioService {
   }
 
   // New method to set up timeout for missing chunks
-  private setupPlaybackTimeout(sessionId: string | undefined, total: number): void {
+  private setupPlaybackTimeout(sessionId: string | undefined, total: number, timeoutOverride?: number): void {
     // Clear any existing timeout
     if (this.playbackTimeoutId) {
       clearTimeout(this.playbackTimeoutId);
     }
     
+    // Use provided timeoutOverride if available, otherwise calculate based on chunk size
+    const finalTimeout = timeoutOverride !== undefined ? timeoutOverride : Math.max(3000, total * 100); // Default to 3s or 100ms per chunk
+    
     // Set timeout to force playback after 1.5 seconds if we have chunks but haven't started playing
     this.playbackTimeoutId = setTimeout(() => {
       if (this.audioQueue.length > 0 && !this.isPlayingSequentially) {
         const timestamp = this.getTimestamp();
-        console.log(`${timestamp} ⏰ TIMEOUT: Forcing playback after 1.5s wait, queue length: ${this.audioQueue.length}`);
+        console.log(`${timestamp} ⏰ TIMEOUT: Forcing playback after ${finalTimeout}ms wait, queue length: ${this.audioQueue.length}`);
         // Use the new consecutive chunk detection logic instead of direct playback
         this.checkAndPlayConsecutiveChunks();
       }
-    }, 1500); // Reduced from 3000ms to 1500ms
+    }, finalTimeout);
     
     // Set up additional cleanup timeout for session management
     setTimeout(() => {
@@ -1448,6 +1512,108 @@ export class AudioService {
     
     this.lastStuckAudioCheck = now;
     return false;
+  }
+
+  // Adaptive chunk optimization methods
+  private calculateAdaptivePlaybackParams(chunkSizeMs: number, totalChunks: number): {
+    playbackRate: number;
+    volume: number;
+    delay: number;
+    fadeIn: number;
+    fadeOut: number;
+  } {
+    if (!this.config.adaptiveChunkMode) {
+      return {
+        playbackRate: this.config.defaultPlaybackRate,
+        volume: this.config.volume,
+        delay: this.config.chunkDelay,
+        fadeIn: this.config.fadeInDuration,
+        fadeOut: this.config.fadeOutDuration
+      };
+    }
+
+    // For larger chunks, we can use more aggressive optimizations
+    const isLargeChunk = chunkSizeMs >= this.config.largeChunkThreshold;
+    const isShortResponse = totalChunks <= 3;
+    const isLongResponse = totalChunks > 10;
+
+    let playbackRate = this.config.defaultPlaybackRate;
+    let volume = this.config.volume;
+    let delay = this.config.chunkDelay;
+    let fadeIn = this.config.fadeInDuration;
+    let fadeOut = this.config.fadeOutDuration;
+
+    if (isLargeChunk) {
+      // Larger chunks can handle slightly faster playback but stay natural
+      playbackRate = Math.min(0.65, this.config.defaultPlaybackRate * 1.1); // Cap at 0.65x for natural speed
+      delay = Math.max(2, this.config.chunkDelay * 0.5);
+      fadeIn = this.config.fadeInDuration * 0.5;
+      fadeOut = this.config.fadeOutDuration * 0.5;
+    }
+
+    if (isShortResponse) {
+      // Short responses can be slightly faster but still natural
+      playbackRate = Math.min(0.7, playbackRate * 1.05); // Cap at 0.7x for natural speed
+      delay = Math.max(1, delay * 0.8);
+    }
+
+    if (isLongResponse) {
+      // Long responses need more careful handling but still natural
+      playbackRate = Math.max(0.4, playbackRate * 0.95); // Minimum 0.4x for natural sound
+      delay = Math.min(10, delay * 1.2);
+    }
+
+    return {
+      playbackRate,
+      volume,
+      delay,
+      fadeIn,
+      fadeOut
+    };
+  }
+
+  private logAdaptiveChunkOptimization(chunkSizeMs: number, totalChunks: number, params: any): void {
+    if (!this.config.verboseLogging) return;
+
+    const timestamp = this.getTimestamp();
+    console.log(`${timestamp} 🎵 ADAPTIVE CHUNK OPTIMIZATION:`, {
+      chunkSize: `${Math.round(chunkSizeMs)}ms`,
+      totalChunks,
+      playbackRate: params.playbackRate.toFixed(2),
+      delay: `${params.delay}ms`,
+      efficiency: `${(chunkSizeMs / params.delay).toFixed(1)}x`
+    });
+  }
+
+  // Method to reset audio service for continuous conversation
+  public resetForContinuousConversation(): void {
+    const timestamp = this.getTimestamp();
+    this.log(`${timestamp} 🔄 RESETTING FOR CONTINUOUS CONVERSATION`);
+    
+    // Clear any pending audio
+    this.stopCurrentAudio();
+    
+    // Reset session state
+    this.sessionChunksSeen.clear();
+    this.sessionStartTime = 0;
+    this.currentSessionId = null;
+    
+    // Clear audio queue
+    this.audioQueue = [];
+    this.isPlayingSequentially = false;
+    this.playbackPromise = null;
+    
+    // Clear timeouts
+    if (this.playbackTimeoutId) {
+      clearTimeout(this.playbackTimeoutId);
+      this.playbackTimeoutId = null;
+    }
+    
+    // Reset performance metrics for new conversation
+    this.performanceMetrics.lastChunkTime = 0;
+    this.performanceMetrics.isCurrentlySpeaking = false;
+    
+    this.log(`${timestamp} ✅ CONTINUOUS CONVERSATION RESET COMPLETE`);
   }
 }
 

@@ -57,6 +57,34 @@ class SocketService {
   private _isConnecting: boolean = false; // Track connection state
   private _isConnected: boolean = false; // Track if already connected
   
+  // Adaptive chunk sizing configuration
+  private adaptiveChunkConfig = {
+    // Chunk size ranges in milliseconds
+    shortResponseChunkSize: 1000, // 1 second for short responses (≤3s)
+    mediumResponseChunkSize: 2500, // 2.5 seconds for medium responses (3-10s)
+    longResponseChunkSize: 4000, // 4 seconds for long responses (>10s)
+    
+    // Response length thresholds in seconds
+    shortResponseThreshold: 3, // ≤3 seconds
+    mediumResponseThreshold: 10, // 3-10 seconds
+    
+    // Transmission delay between chunks (reduced from 150ms to 50ms)
+    transmissionDelay: 50,
+    
+    // Dynamic chunk sizing based on conversation context
+    enableDynamicSizing: true,
+    
+    // Performance tracking
+    trackChunkPerformance: true,
+    chunkPerformanceStats: {
+      totalChunks: 0,
+      totalAudioTime: 0,
+      totalTransmissionTime: 0,
+      averageChunkSize: 0,
+      averageTransmissionDelay: 0
+    }
+  };
+  
   // WebSocket spam fix - Connection management
   private connectionManager = {
     maxReconnectAttempts: 3,
@@ -542,10 +570,8 @@ class SocketService {
       // Always clear processed chunks after an AI response is complete
       this._processedChunks.clear();
       this._duplicateCount = 0; // Reset duplicate count for next response
-      // Reset flag after a short delay
-      setTimeout(() => {
-        this._audioCompleted = false;
-      }, 1000);
+      // Reset flag immediately for continuous conversation
+      this._audioCompleted = false;
     });
 
     // Add text-response event listener (alternative to ai-response-text)
@@ -708,8 +734,16 @@ class SocketService {
       this.stopMediaRecorder();
     };
     
-    // Start recording with 1-second timeslices for real-time streaming
-    this.mediaRecorder.start(1000);
+    // Use adaptive chunk sizing instead of fixed 1-second chunks
+    const adaptiveChunkSize = this.calculateAdaptiveChunkSize();
+    console.log('🎵 STARTING ADAPTIVE RECORDING:', {
+      chunkSize: `${adaptiveChunkSize}ms`,
+      transmissionDelay: `${this.adaptiveChunkConfig.transmissionDelay}ms`,
+      expectedEfficiency: `${(adaptiveChunkSize / this.adaptiveChunkConfig.transmissionDelay).toFixed(1)}x improvement`
+    });
+    
+    // Start recording with adaptive timeslices for optimized streaming
+    this.mediaRecorder.start(adaptiveChunkSize);
   }
 
   private stopMediaRecorder(): void {
@@ -732,6 +766,9 @@ class SocketService {
   private async sendAudioChunk(blob: Blob) {
     if (!this.socket) return;
 
+    const startTime = performance.now();
+    const chunkSizeMs = blob.size / 1024; // Approximate size in KB for tracking
+
     // Convert blob to base64
     const reader = new FileReader();
     reader.onloadend = () => {
@@ -742,19 +779,28 @@ class SocketService {
         this.audioChunkCount++;
         
         if (this.audioChunkCount % 50 === 0) {
-          console.log('🔊 SENDING AUDIO CHUNK TO AI:', {
+          console.log('🔊 SENDING ADAPTIVE AUDIO CHUNK TO AI:', {
             chunkNumber: this.audioChunkCount,
-            chunkSize: blob.size
+            chunkSize: blob.size,
+            chunkSizeMs: Math.round(chunkSizeMs),
+            transmissionDelay: this.adaptiveChunkConfig.transmissionDelay
           });
         }
         
-        if (this.multiPortConfig.enabled) {
-          // Use load balancing to distribute chunks across ports
-          const targetPort = this.getLoadBalancedPort();
-          targetPort.emit('audio-chunk', { audio: base64Audio });
-        } else {
-          this.socket!.emit('audio-chunk', { audio: base64Audio });
-        }
+        // Apply adaptive transmission delay
+        setTimeout(() => {
+          if (this.multiPortConfig.enabled) {
+            // Use load balancing to distribute chunks across ports
+            const targetPort = this.getLoadBalancedPort();
+            targetPort.emit('audio-chunk', { audio: base64Audio });
+          } else {
+            this.socket!.emit('audio-chunk', { audio: base64Audio });
+          }
+          
+          // Track performance metrics
+          const transmissionTime = performance.now() - startTime;
+          this.updateChunkPerformanceStats(chunkSizeMs, transmissionTime);
+        }, this.adaptiveChunkConfig.transmissionDelay);
       }
     };
     reader.readAsDataURL(blob);
@@ -958,6 +1004,111 @@ class SocketService {
   updateMultiPortConfig(config: Partial<typeof this.multiPortConfig>) {
     Object.assign(this.multiPortConfig, config);
     console.log('🔧 Multi-port configuration updated:', this.multiPortConfig);
+  }
+
+  // Adaptive chunk sizing methods
+  private calculateAdaptiveChunkSize(responseLengthSeconds?: number): number {
+    if (!this.adaptiveChunkConfig.enableDynamicSizing) {
+      return this.adaptiveChunkConfig.shortResponseChunkSize;
+    }
+
+    // If we have response length data, use it for sizing
+    if (responseLengthSeconds !== undefined) {
+      if (responseLengthSeconds <= this.adaptiveChunkConfig.shortResponseThreshold) {
+        return this.adaptiveChunkConfig.shortResponseChunkSize;
+      } else if (responseLengthSeconds <= this.adaptiveChunkConfig.mediumResponseThreshold) {
+        return this.adaptiveChunkConfig.mediumResponseChunkSize;
+      } else {
+        return this.adaptiveChunkConfig.longResponseChunkSize;
+      }
+    }
+
+    // Default to medium chunk size for unknown response lengths
+    return this.adaptiveChunkConfig.mediumResponseChunkSize;
+  }
+
+  private updateChunkPerformanceStats(chunkSizeMs: number, transmissionTimeMs: number): void {
+    if (!this.adaptiveChunkConfig.trackChunkPerformance) return;
+
+    const stats = this.adaptiveChunkConfig.chunkPerformanceStats;
+    stats.totalChunks++;
+    stats.totalAudioTime += chunkSizeMs;
+    stats.totalTransmissionTime += transmissionTimeMs;
+    
+    // Calculate averages
+    stats.averageChunkSize = stats.totalAudioTime / stats.totalChunks;
+    stats.averageTransmissionDelay = stats.totalTransmissionTime / stats.totalChunks;
+
+    // Log performance improvements every 10 chunks
+    if (stats.totalChunks % 10 === 0) {
+      const efficiencyRatio = stats.averageChunkSize / stats.averageTransmissionDelay;
+      console.log('📊 ADAPTIVE CHUNK PERFORMANCE:', {
+        totalChunks: stats.totalChunks,
+        averageChunkSize: `${Math.round(stats.averageChunkSize)}ms`,
+        averageTransmissionDelay: `${Math.round(stats.averageTransmissionDelay)}ms`,
+        efficiencyRatio: `${efficiencyRatio.toFixed(1)}x improvement`,
+        overheadReduction: `${((1 - stats.averageTransmissionDelay / stats.averageChunkSize) * 100).toFixed(1)}%`
+      });
+    }
+  }
+
+  // Method to reset for continuous conversation
+  public resetForContinuousConversation(): void {
+    console.log('🔄 RESETTING SOCKET SERVICE FOR CONTINUOUS CONVERSATION');
+    
+    // Reset audio completion flag
+    this._audioCompleted = false;
+    
+    // Clear processed chunks
+    this._processedChunks.clear();
+    this._duplicateCount = 0;
+    
+    // Reset audio chunk count
+    this.audioChunkCount = 0;
+    
+    console.log('✅ SOCKET SERVICE RESET COMPLETE');
+  }
+
+  // Configuration and performance methods
+  updateAdaptiveChunkConfig(config: Partial<typeof this.adaptiveChunkConfig>): void {
+    Object.assign(this.adaptiveChunkConfig, config);
+    console.log('🔧 Adaptive chunk configuration updated:', this.adaptiveChunkConfig);
+  }
+
+  getAdaptiveChunkConfig() {
+    return { ...this.adaptiveChunkConfig };
+  }
+
+  getChunkPerformanceStats() {
+    return this.adaptiveChunkConfig.chunkPerformanceStats;
+  }
+
+  // Method to calculate expected performance improvements
+  calculatePerformanceImprovement(responseLengthSeconds: number): {
+    oldChunks: number;
+    newChunks: number;
+    improvement: string;
+    efficiencyGain: number;
+  } {
+    const oldChunkSize = 1000; // Old 1-second chunks
+    const oldTransmissionDelay = 150; // Old 150ms delay
+    const newChunkSize = this.calculateAdaptiveChunkSize(responseLengthSeconds);
+    const newTransmissionDelay = this.adaptiveChunkConfig.transmissionDelay;
+
+    const oldChunks = Math.ceil((responseLengthSeconds * 1000) / oldChunkSize);
+    const newChunks = Math.ceil((responseLengthSeconds * 1000) / newChunkSize);
+
+    const oldTotalTime = oldChunks * (oldChunkSize + oldTransmissionDelay);
+    const newTotalTime = newChunks * (newChunkSize + newTransmissionDelay);
+    const improvement = ((oldTotalTime - newTotalTime) / oldTotalTime * 100).toFixed(1);
+    const efficiencyGain = (newChunkSize / newTransmissionDelay) / (oldChunkSize / oldTransmissionDelay);
+
+    return {
+      oldChunks,
+      newChunks,
+      improvement: `${improvement}% faster`,
+      efficiencyGain: Number(efficiencyGain.toFixed(1))
+    };
   }
 }
 

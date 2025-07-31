@@ -7,6 +7,7 @@ import { LoadingScreen } from "@/components/LoadingScreen";
 import { VoiceTranscript } from "@/components/VoiceTranscript";
 import { AudioTest } from "@/components/AudioTest";
 import { AudioControls } from "@/components/AudioControls";
+import { AdaptiveChunkTest } from "@/components/AdaptiveChunkTest";
 import ThemeSwitch from "@/components/ThemeSwitch";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Heart } from "lucide-react";
@@ -17,6 +18,7 @@ const Index = () => {
   const [currentTranscript, setCurrentTranscript] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [isMicOn, setIsMicOn] = useState(false);
+  const [showAdaptiveTest, setShowAdaptiveTest] = useState(false);
 
   useEffect(() => {
     // Simulate loading time
@@ -74,6 +76,20 @@ const Index = () => {
         </div>
       </div>
 
+      {/* Adaptive Chunk Test Toggle */}
+      <div className="fixed top-4 right-4 z-50">
+        <button
+          onClick={() => setShowAdaptiveTest(!showAdaptiveTest)}
+          className={`backdrop-blur-xl border rounded-lg px-4 py-2 shadow-lg transition-all duration-300 text-sm font-medium ${
+            isDark 
+              ? 'bg-black/20 border-white/10 text-white/80 hover:bg-black/30' 
+              : 'bg-white/90 border-blue-900/20 text-blue-900/80 hover:bg-white/95'
+          }`}
+        >
+          {showAdaptiveTest ? 'Hide' : 'Show'} Adaptive Test
+        </button>
+      </div>
+
       {/* Audio Test Button - Commented out to prevent automatic testing */}
       {/* <AudioTest /> */}
 
@@ -98,6 +114,15 @@ const Index = () => {
 
       {/* Voice Transcript Display */}
       <VoiceTranscript transcript={currentTranscript} isListening={isListening} />
+
+      {/* Adaptive Chunk Test Overlay */}
+      {showAdaptiveTest && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm">
+          <div className="absolute inset-4 overflow-auto">
+            <AdaptiveChunkTest />
+          </div>
+        </div>
+      )}
 
       {/* Mic Button with transcript handler */}
       <MicButton 
