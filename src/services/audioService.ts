@@ -21,6 +21,7 @@ export class AudioService {
   private isInitialized: boolean = false; // Track if service has been initialized
   private sessionMonitoringInterval: NodeJS.Timeout | null = null; // Track session monitoring interval
   private sessionRefreshInterval: NodeJS.Timeout | null = null; // Track session refresh interval
+  private lastStuckAudioCheck: number = 0; // Track when we last checked for stuck audio
   
   // Enhanced configuration for backend integration
   private config = {
@@ -578,6 +579,16 @@ export class AudioService {
     const timestamp = this.getTimestamp();
     const chunkInfo = chunkIndex !== undefined ? `${chunkIndex}/${totalChunks}` : `#${this._chunkCount}`;
     const startTime = performance.now();
+    
+    // Update lastChunkTime to prevent stuck audio detection
+    this.lastChunkTime = Date.now();
+    
+    // Prevent processing too many chunks simultaneously
+    const activeSources = this.getTotalActiveSources();
+    if (activeSources > 10) {
+      this.log(`${timestamp} ⚠️ TOO MANY ACTIVE SOURCES: ${activeSources}, skipping chunk ${chunkInfo}`);
+      return;
+    }
     
     this.log(`${timestamp} 🔧 DECODE START: chunk ${chunkInfo}, session: ${sessionId?.substring(0, 8) || 'none'}..., input size: ${base64Audio.length}B`);
     
@@ -1356,6 +1367,7 @@ export class AudioService {
     this.sessionStartTime = 0;
     this.consecutiveChunkCount = 0;
     this.lastChunkTime = 0;
+    this.lastStuckAudioCheck = 0;
     this.isInitialized = false;
     
     // Reset performance metrics
@@ -1387,6 +1399,7 @@ export class AudioService {
     this.sessionChunksSeen.clear();
     this.consecutiveChunkCount = 0;
     this.lastChunkTime = 0;
+    this.lastStuckAudioCheck = 0;
     this.sessionStartTime = Date.now();
     
     // Clear queue if it's been too long
@@ -1411,15 +1424,29 @@ export class AudioService {
   // New method to check for stuck audio and recover
   private checkForStuckAudio(): boolean {
     const timestamp = this.getTimestamp();
-    const timeSinceLastChunk = Date.now() - this.lastChunkTime;
-    const hasStuckAudio = this.getTotalActiveSources() > 0 && timeSinceLastChunk > this.config.chunkTimeout;
+    const now = Date.now();
+    
+    // Add cooldown to prevent excessive stuck audio checks
+    const timeSinceLastCheck = now - this.lastStuckAudioCheck;
+    if (timeSinceLastCheck < 5000) { // 5 second cooldown
+      return false;
+    }
+    
+    const timeSinceLastChunk = now - this.lastChunkTime;
+    const activeSources = this.getTotalActiveSources();
+    
+    // Only check for stuck audio if we have active sources and a reasonable time has passed
+    // Increased timeout to be less aggressive and prevent false positives
+    const hasStuckAudio = activeSources > 0 && timeSinceLastChunk > this.config.chunkTimeout * 2;
     
     if (hasStuckAudio) {
-      console.log(`${timestamp} 🔧 STUCK AUDIO DETECTED: ${this.getTotalActiveSources()} sources, ${timeSinceLastChunk}ms since last chunk`);
+      console.log(`${timestamp} 🔧 STUCK AUDIO DETECTED: ${activeSources} sources, ${timeSinceLastChunk}ms since last chunk`);
       this.forceClearAllAudio();
+      this.lastStuckAudioCheck = now;
       return true;
     }
     
+    this.lastStuckAudioCheck = now;
     return false;
   }
 }
