@@ -206,11 +206,18 @@ export function MicButton({ onTranscriptUpdate, onMicStateChange }: MicButtonPro
         // Reset speech recognition for new query but keep it active
         speechRecognition.resetForNewQuery();
         
-        // Ensure speech recognition is still active for continuous conversation
-        if (isMicOn && speechRecognition.isAvailable() && !speechRecognition.isCurrentlyListening()) {
-          console.log('🔄 RESTARTING SPEECH RECOGNITION FOR CONTINUOUS CONVERSATION');
-          speechRecognition.start();
-        }
+        // Debug speech recognition state
+        console.log('🔍 SPEECH RECOGNITION STATE AFTER RESET:', speechRecognition.getState());
+        
+        // The speech recognition service will handle its own restart
+        // Additional check for stuck recognition after a delay
+        setTimeout(() => {
+          console.log('🔍 SPEECH RECOGNITION STATE AFTER 2s:', speechRecognition.getState());
+          if (isMicOn && speechRecognition.isAvailable() && speechRecognition.isCurrentlyListening() && !speechRecognition.isWorking()) {
+            console.log('🔄 FORCE RESTARTING SPEECH RECOGNITION (stuck detection)');
+            speechRecognition.forceRestart();
+          }
+        }, 2000); // Check after 2 seconds
         
         // Hide thinking indicator - you can add state for this
         toast({

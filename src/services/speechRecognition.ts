@@ -11,6 +11,7 @@ export class SpeechRecognitionService {
   private currentTranscript: string = ''; // Track current transcript
   private lastFinalTranscript: string = ''; // Track last final transcript to prevent duplicates
   private transcriptHistory: Set<string> = new Set(); // Track sent transcripts to prevent duplicates
+  private stuckDetectionTimeout: NodeJS.Timeout | null = null; // Timeout to detect stuck recognition
 
   constructor() {
     // Check if Web Speech API is available
@@ -30,6 +31,9 @@ export class SpeechRecognitionService {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = 'en-US';
+    
+    // Add confidence threshold to reduce false positives
+    this.recognition.maxAlternatives = 1;
 
     this.recognition.onresult = (event: any) => {
       // Get all results, not just the last one
@@ -41,13 +45,33 @@ export class SpeechRecognitionService {
       if (lastResultIndex >= 0) {
         const result = event.results[lastResultIndex];
         const transcript = result[0].transcript;
+        const confidence = result[0].confidence || 0;
         const isFinal = result.isFinal;
         
-        if (isFinal) {
-          hasFinalResult = true;
-        }
+        // Only process if confidence is above threshold or it's a final result
+        const confidenceThreshold = 0.3; // Minimum confidence for interim results
+        const isValidResult = isFinal || confidence > confidenceThreshold;
         
-        fullTranscript = transcript.trim();
+        if (isValidResult) {
+          if (isFinal) {
+            hasFinalResult = true;
+          }
+          
+          fullTranscript = transcript.trim();
+          
+          console.log('🎤 SPEECH DETECTED:', { 
+            transcript: fullTranscript, 
+            confidence: confidence.toFixed(2),
+            isFinal,
+            isValidResult
+          });
+        } else {
+          console.log('🔇 LOW CONFIDENCE SPEECH IGNORED:', { 
+            transcript: transcript.trim(), 
+            confidence: confidence.toFixed(2),
+            threshold: confidenceThreshold
+          });
+        }
       }
       
       console.log('🎤 USER SPEAKING:', { 
@@ -74,7 +98,12 @@ export class SpeechRecognitionService {
         // Check if this transcript is significantly different from the last one
         const isNewTranscript = this.isNewFinalTranscript(fullTranscript);
         
-        if (isNewTranscript) {
+        // Only send if transcript is long enough and meaningful (prevents false positives)
+        const minSpeechLength = 2; // Minimum 2 characters
+        const isLongEnough = fullTranscript.trim().length >= minSpeechLength;
+        const isMeaningful = this.isMeaningfulTranscript(fullTranscript);
+        
+        if (isNewTranscript && isLongEnough && isMeaningful) {
           console.log('🤖 FINAL TRANSCRIPT - NOTIFYING AI:', fullTranscript);
           this.lastSpeechTime = Date.now();
           this.clearSilenceTimeout(); // Clear timeout to prevent multiple stop-speaking
@@ -83,7 +112,13 @@ export class SpeechRecognitionService {
           this.transcriptHistory.add(fullTranscript); // Add to history
           stopSpeaking(fullTranscript);
         } else {
-          console.log('🔄 DUPLICATE TRANSCRIPT DETECTED, skipping:', fullTranscript);
+          if (!isNewTranscript) {
+            console.log('🔄 DUPLICATE TRANSCRIPT DETECTED, skipping:', fullTranscript);
+          } else if (!isLongEnough) {
+            console.log('📏 TRANSCRIPT TOO SHORT, skipping:', fullTranscript, `(min: ${minSpeechLength} chars)`);
+          } else if (!isMeaningful) {
+            console.log('🚫 TRANSCRIPT NOT MEANINGFUL, skipping:', fullTranscript);
+          }
         }
       }
     };
@@ -101,15 +136,44 @@ export class SpeechRecognitionService {
       this.clearSilenceTimeout();
       
       // Only send stop-speaking if we haven't already sent a final transcript
+      // AND if there's actual speech content (not just background noise)
       if (!this.hasSentFinalTranscript) {
-        const transcriptToSend = this.currentTranscript.trim() || 'I heard you speak';
-        console.log('🛑 Speech recognition ended, sending transcript:', transcriptToSend);
-        stopSpeaking(transcriptToSend);
+        const hasActualSpeech = this.currentTranscript.trim().length > 0;
+        const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
+        const hasRecentSpeech = timeSinceLastSpeech < 10000; // 10 seconds
+        
+        const isMeaningful = this.isMeaningfulTranscript(this.currentTranscript.trim());
+        
+        if (hasActualSpeech && hasRecentSpeech && isMeaningful) {
+          console.log('🛑 Speech recognition ended, sending transcript:', this.currentTranscript.trim());
+          stopSpeaking(this.currentTranscript.trim());
+        } else {
+          console.log('🔇 No actual speech detected, not sending transcript');
+          console.log('🔍 Speech check:', { 
+            hasActualSpeech, 
+            hasRecentSpeech, 
+            isMeaningful: this.isMeaningfulTranscript(this.currentTranscript.trim()),
+            timeSinceLastSpeech: `${timeSinceLastSpeech}ms`,
+            currentTranscript: `"${this.currentTranscript.trim()}"`
+          });
+        }
       }
       
-      // Don't auto-restart - only restart when explicitly requested
-      // This prevents the continuous stopping/starting loop
-      this.isListening = false;
+      // Auto-restart if we're supposed to be listening (for continuous conversation)
+      // But only if we haven't sent a final transcript (to avoid restarting after user spoke)
+      if (this.isListening && !this.hasSentFinalTranscript) {
+        console.log('🔄 Auto-restarting speech recognition for continuous conversation');
+        // Reset the listening flag so we can restart
+        this.isListening = false;
+        setTimeout(() => {
+          // Check if we should still be listening (mic might have been turned off)
+          if (!this.hasSentFinalTranscript) {
+            this.start();
+          }
+        }, 1000); // Wait 1 second before restarting
+      } else {
+        this.isListening = false;
+      }
     };
   }
 
@@ -126,14 +190,18 @@ export class SpeechRecognitionService {
         return;
       }
 
+      // Reset state for new session
       this.isListening = true;
       this.hasSentFinalTranscript = false; // Reset flag for new speech session
       this.currentTranscript = ''; // Reset transcript for new session
       this.lastFinalTranscript = ''; // Reset last final transcript
+      
+      // Try to start recognition
       this.recognition.start();
       console.log('🎤 SPEECH RECOGNITION STARTED');
       this.lastSpeechTime = Date.now();
       this.resetSilenceTimeout();
+      this.startStuckDetection();
     } catch (error) {
       console.error('Error starting speech recognition:', error);
       this.isListening = false;
@@ -144,8 +212,10 @@ export class SpeechRecognitionService {
         try {
           this.recognition.stop();
           setTimeout(() => {
-            this.isListening = true;
-            this.recognition.start();
+            if (!this.isListening) { // Only restart if we're supposed to be listening
+              this.isListening = true;
+              this.recognition.start();
+            }
           }, 100);
         } catch (restartError) {
           console.error('Error restarting speech recognition:', restartError);
@@ -160,6 +230,7 @@ export class SpeechRecognitionService {
     
     this.isListening = false;
     this.clearSilenceTimeout();
+    this.clearStuckDetection();
     try {
       this.recognition.stop();
       console.log('🛑 SPEECH RECOGNITION STOPPED');
@@ -183,6 +254,27 @@ export class SpeechRecognitionService {
   // Public method to check if speech recognition is currently listening
   isCurrentlyListening(): boolean {
     return this.isListening;
+  }
+
+  // Public method to check if speech recognition is working properly
+  isWorking(): boolean {
+    const timeSinceLastActivity = Date.now() - this.lastSpeechTime;
+    const hasRecentActivity = timeSinceLastActivity < 60000; // 1 minute
+    
+    return this.isListening && hasRecentActivity;
+  }
+
+  // Public method to get current state for debugging
+  getState(): any {
+    return {
+      isListening: this.isListening,
+      isAvailable: !!this.recognition,
+      hasSentFinalTranscript: this.hasSentFinalTranscript,
+      currentTranscript: this.currentTranscript,
+      lastSpeechTime: this.lastSpeechTime,
+      timeSinceLastActivity: Date.now() - this.lastSpeechTime,
+      isWorking: this.isWorking()
+    };
   }
 
   private lastSentTranscript: string = '';
@@ -287,10 +379,27 @@ export class SpeechRecognitionService {
       this.clearSilenceTimeout(); // Clear to prevent multiple calls
       
       // Only send stop-speaking if we haven't already sent a final transcript
+      // AND if there's actual speech content
       if (!this.hasSentFinalTranscript) {
-        const transcriptToSend = this.currentTranscript.trim() || 'I heard you speak';
-        console.log('🛑 Silence detected, sending transcript:', transcriptToSend);
-        stopSpeaking(transcriptToSend);
+        const hasActualSpeech = this.currentTranscript.trim().length > 0;
+        const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
+        const hasRecentSpeech = timeSinceLastSpeech < 10000; // 10 seconds
+        
+        const isMeaningful = this.isMeaningfulTranscript(this.currentTranscript.trim());
+        
+        if (hasActualSpeech && hasRecentSpeech && isMeaningful) {
+          console.log('🛑 Silence detected, sending transcript:', this.currentTranscript.trim());
+          stopSpeaking(this.currentTranscript.trim());
+        } else {
+          console.log('🔇 Silence detected but no actual speech, not sending transcript');
+          console.log('🔍 Silence check:', { 
+            hasActualSpeech, 
+            hasRecentSpeech, 
+            isMeaningful: this.isMeaningfulTranscript(this.currentTranscript.trim()),
+            timeSinceLastSpeech: `${timeSinceLastSpeech}ms`,
+            currentTranscript: `"${this.currentTranscript.trim()}"`
+          });
+        }
       }
     }, 5000); // Changed from 2000 to 5000 ms
   }
@@ -302,6 +411,28 @@ export class SpeechRecognitionService {
     }
   }
 
+  private startStuckDetection() {
+    // Clear any existing stuck detection timeout
+    if (this.stuckDetectionTimeout) {
+      clearTimeout(this.stuckDetectionTimeout);
+    }
+    
+    // Set timeout to detect if recognition gets stuck (30 seconds)
+    this.stuckDetectionTimeout = setTimeout(() => {
+      if (this.isListening && !this.hasSentFinalTranscript) {
+        console.log('⚠️ SPEECH RECOGNITION STUCK - Force restarting');
+        this.forceRestart();
+      }
+    }, 30000); // 30 seconds
+  }
+
+  private clearStuckDetection() {
+    if (this.stuckDetectionTimeout) {
+      clearTimeout(this.stuckDetectionTimeout);
+      this.stuckDetectionTimeout = null;
+    }
+  }
+
   // Method to clear transcript history (useful for new conversations)
   clearHistory() {
     this.transcriptHistory.clear();
@@ -310,16 +441,88 @@ export class SpeechRecognitionService {
     this.hasSentFinalTranscript = false;
     this.lastSentTranscript = '';
     this.lastUpdateTime = 0;
+    this.clearStuckDetection();
     console.log('🧹 TRANSCRIPT HISTORY CLEARED');
+  }
+
+  // Method to check if a transcript is meaningful (not just noise)
+  private isMeaningfulTranscript(transcript: string): boolean {
+    const trimmed = transcript.trim();
+    
+    // Check minimum length
+    if (trimmed.length < 2) return false;
+    
+    // Check for common false positives
+    const falsePositives = [
+      'i heard you speak',
+      'i heard you',
+      'heard you speak',
+      'heard you',
+      'you speak',
+      'speak',
+      'um',
+      'uh',
+      'ah',
+      'oh',
+      'hmm',
+      'mm',
+      'mhm',
+      'yeah',
+      'yes',
+      'no',
+      'okay',
+      'ok',
+      'right',
+      'sure',
+      'uh huh',
+      'uh-huh'
+    ];
+    
+    const lowerTranscript = trimmed.toLowerCase();
+    return !falsePositives.some(fp => lowerTranscript.includes(fp));
+  }
+
+  // Method to force restart speech recognition (useful if it gets stuck)
+  forceRestart() {
+    console.log('🔄 FORCE RESTARTING SPEECH RECOGNITION');
+    this.isListening = false;
+    this.hasSentFinalTranscript = false;
+    this.currentTranscript = '';
+    this.lastFinalTranscript = '';
+    this.clearSilenceTimeout();
+    this.clearStuckDetection();
+    
+    // Stop any existing recognition
+    if (this.recognition) {
+      try {
+        this.recognition.stop();
+      } catch (error) {
+        console.log('Error stopping recognition during force restart:', error);
+      }
+    }
+    
+    // Start fresh after a short delay
+    setTimeout(() => {
+      this.start();
+    }, 500);
   }
 
   // Method to reset for new query (called after AI finishes speaking)
   resetForNewQuery() {
     this.clearHistory();
     this.clearSilenceTimeout();
+    this.clearStuckDetection();
     // Don't set isListening = false - keep listening for continuous conversation
     this.hasSentFinalTranscript = false; // Reset flag for new query
     console.log('🔄 SPEECH RECOGNITION RESET FOR NEW QUERY');
+    
+    // Ensure speech recognition is actually running for continuous conversation
+    if (!this.isListening && this.recognition) {
+      console.log('🔄 RESTARTING SPEECH RECOGNITION AFTER RESET');
+      setTimeout(() => {
+        this.start();
+      }, 100); // Small delay to ensure reset is complete
+    }
   }
 }
 
