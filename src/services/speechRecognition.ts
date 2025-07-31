@@ -98,12 +98,11 @@ export class SpeechRecognitionService {
         // Check if this transcript is significantly different from the last one
         const isNewTranscript = this.isNewFinalTranscript(fullTranscript);
         
-        // Only send if transcript is long enough and meaningful (prevents false positives)
+        // Send all transcripts to the backend (no filtering)
         const minSpeechLength = 2; // Minimum 2 characters
         const isLongEnough = fullTranscript.trim().length >= minSpeechLength;
-        const isMeaningful = this.isMeaningfulTranscript(fullTranscript);
         
-        if (isNewTranscript && isLongEnough && isMeaningful) {
+        if (isNewTranscript && isLongEnough) {
           console.log('🤖 FINAL TRANSCRIPT - NOTIFYING AI:', fullTranscript);
           this.lastSpeechTime = Date.now();
           this.clearSilenceTimeout(); // Clear timeout to prevent multiple stop-speaking
@@ -116,8 +115,6 @@ export class SpeechRecognitionService {
             console.log('🔄 DUPLICATE TRANSCRIPT DETECTED, skipping:', fullTranscript);
           } else if (!isLongEnough) {
             console.log('📏 TRANSCRIPT TOO SHORT, skipping:', fullTranscript, `(min: ${minSpeechLength} chars)`);
-          } else if (!isMeaningful) {
-            console.log('🚫 TRANSCRIPT NOT MEANINGFUL, skipping:', fullTranscript);
           }
         }
       }
@@ -142,9 +139,7 @@ export class SpeechRecognitionService {
         const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
         const hasRecentSpeech = timeSinceLastSpeech < 10000; // 10 seconds
         
-        const isMeaningful = this.isMeaningfulTranscript(this.currentTranscript.trim());
-        
-        if (hasActualSpeech && hasRecentSpeech && isMeaningful) {
+        if (hasActualSpeech && hasRecentSpeech) {
           console.log('🛑 Speech recognition ended, sending transcript:', this.currentTranscript.trim());
           stopSpeaking(this.currentTranscript.trim());
         } else {
@@ -152,7 +147,6 @@ export class SpeechRecognitionService {
           console.log('🔍 Speech check:', { 
             hasActualSpeech, 
             hasRecentSpeech, 
-            isMeaningful: this.isMeaningfulTranscript(this.currentTranscript.trim()),
             timeSinceLastSpeech: `${timeSinceLastSpeech}ms`,
             currentTranscript: `"${this.currentTranscript.trim()}"`
           });
@@ -385,9 +379,7 @@ export class SpeechRecognitionService {
         const timeSinceLastSpeech = Date.now() - this.lastSpeechTime;
         const hasRecentSpeech = timeSinceLastSpeech < 10000; // 10 seconds
         
-        const isMeaningful = this.isMeaningfulTranscript(this.currentTranscript.trim());
-        
-        if (hasActualSpeech && hasRecentSpeech && isMeaningful) {
+        if (hasActualSpeech && hasRecentSpeech) {
           console.log('🛑 Silence detected, sending transcript:', this.currentTranscript.trim());
           stopSpeaking(this.currentTranscript.trim());
         } else {
@@ -395,7 +387,6 @@ export class SpeechRecognitionService {
           console.log('🔍 Silence check:', { 
             hasActualSpeech, 
             hasRecentSpeech, 
-            isMeaningful: this.isMeaningfulTranscript(this.currentTranscript.trim()),
             timeSinceLastSpeech: `${timeSinceLastSpeech}ms`,
             currentTranscript: `"${this.currentTranscript.trim()}"`
           });
@@ -445,40 +436,7 @@ export class SpeechRecognitionService {
     console.log('🧹 TRANSCRIPT HISTORY CLEARED');
   }
 
-  // Method to check if a transcript is meaningful (not just noise)
-  private isMeaningfulTranscript(transcript: string): boolean {
-    const trimmed = transcript.trim();
-    
-    // Check minimum length
-    if (trimmed.length < 2) return false;
-    
-    // Check for common false positives
-    const falsePositives = [
-      'i heard you speak',
-      'i heard you',
-      'heard you speak',
-      'heard you',
-      'you speak',
-      'speak',
-      'um',
-      'uh',
-      'ah',
-      'oh',
-      'hmm',
-      'mm',
-      'mhm',
-      'yeah',
-      'yes',
-      'no',
-      'right',
-      'sure',
-      'uh huh',
-      'uh-huh'
-    ];
-    
-    const lowerTranscript = trimmed.toLowerCase();
-    return !falsePositives.some(fp => lowerTranscript.includes(fp));
-  }
+
 
   // Method to force restart speech recognition (useful if it gets stuck)
   forceRestart() {

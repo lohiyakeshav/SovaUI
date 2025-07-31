@@ -39,7 +39,7 @@ export function VoiceTranscript({ transcript, isListening }: VoiceTranscriptProp
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-24 z-30 pointer-events-none mb-20">
+    <div className="fixed inset-x-0 top-32 z-30 pointer-events-none">
       <div className="flex items-center justify-center px-8">
         <div className="max-w-4xl w-full">
           <AnimatePresence mode="wait">
