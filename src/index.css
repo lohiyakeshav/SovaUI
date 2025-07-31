@@ -1,0 +1,190 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 195 100% 50%;
+    --foreground: 240 10% 3.9%;
+
+    --card: 195 100% 55%;
+    --card-foreground: 240 10% 3.9%;
+
+    --popover: 195 100% 55%;
+    --popover-foreground: 240 10% 3.9%;
+
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 195 100% 45%;
+    --secondary-foreground: 240 5.9% 10%;
+
+    --muted: 195 100% 45%;
+    --muted-foreground: 240 3.8% 46.1%;
+
+    --accent: 195 100% 45%;
+    --accent-foreground: 240 5.9% 10%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 195 100% 40%;
+    --input: 195 100% 40%;
+    --ring: 240 5.9% 10%;
+
+    --radius: 0.5rem;
+
+    /* Light Veil Design Tokens */
+    --veil-primary: 240 5.9% 10%;
+    --veil-secondary: 195 100% 45%;
+    --veil-accent: 240 5.9% 10%;
+    --veil-glow: 240 5.9% 10%;
+
+    /* Gradients */
+    --gradient-veil: linear-gradient(135deg, hsl(var(--veil-primary) / 0.1), hsl(var(--veil-secondary) / 0.1));
+    --gradient-mystic: radial-gradient(circle at 50% 50%, hsl(var(--veil-accent) / 0.2), transparent 70%);
+
+    /* Shadows */
+    --shadow-veil: 0 0 40px hsl(var(--veil-primary) / 0.3);
+    --shadow-glow: 0 0 20px hsl(var(--veil-glow) / 0.4);
+
+    /* Animations */
+    --transition-mystic: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 220 13% 6%;
+    --foreground: 210 20% 95%;
+
+    --card: 220 13% 8%;
+    --card-foreground: 210 20% 95%;
+
+    --popover: 220 13% 8%;
+    --popover-foreground: 210 20% 95%;
+
+    --primary: 280 100% 70%;
+    --primary-foreground: 220 13% 6%;
+
+    --secondary: 220 13% 12%;
+    --secondary-foreground: 210 20% 95%;
+
+    --muted: 220 13% 12%;
+    --muted-foreground: 215 16% 46%;
+
+    --accent: 260 100% 60%;
+    --accent-foreground: 220 13% 6%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 20% 95%;
+
+    --border: 220 13% 15%;
+    --input: 220 13% 15%;
+    --ring: 280 100% 70%;
+
+    /* Dark Veil Design Tokens */
+    --veil-primary: 280 100% 70%;
+    --veil-secondary: 260 100% 60%;
+    --veil-accent: 300 100% 80%;
+    --veil-glow: 280 100% 85%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    /* Apple-style safe area support */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  
+  html {
+    @apply bg-background;
+  }
+
+  /* Apple HIG inspired animations */
+  @keyframes heartbeat {
+    0%, 100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.1);
+      opacity: 0.8;
+    }
+  }
+
+  .heartbeat {
+    animation: heartbeat 2s ease-in-out infinite;
+  }
+
+  /* Apple-style backdrop blur */
+  .apple-glass {
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  /* Safe area utilities */
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  
+  .safe-area-left {
+    padding-left: env(safe-area-inset-left);
+  }
+  
+  .safe-area-right {
+    padding-right: env(safe-area-inset-right);
+  }
+  
+  /* Pulse animation delays */
+  .delay-75 {
+    animation-delay: 75ms;
+  }
+  
+  .delay-150 {
+    animation-delay: 150ms;
+  }
+
+  /* Custom border utilities */
+  .border-3 {
+    border-width: 3px;
+  }
+}
