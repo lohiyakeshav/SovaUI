@@ -470,8 +470,6 @@ export class SpeechRecognitionService {
       'yeah',
       'yes',
       'no',
-      'okay',
-      'ok',
       'right',
       'sure',
       'uh huh',

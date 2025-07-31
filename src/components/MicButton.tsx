@@ -3,30 +3,25 @@ import { Mic, MicOff, Loader2, VolumeX } from "lucide-react";
 import { socketService } from "@/services/socketService";
 import { speechRecognition } from "@/services/speechRecognition";
 import { audioService } from "@/services/audioService";
-import { interruptionManager } from "@/services/InterruptionManager";
+
 import { useToast } from "@/hooks/use-toast";
 import { useTheme } from "@/contexts/ThemeContext";
 
 interface MicButtonProps {
   onTranscriptUpdate?: (transcript: string) => void;
   onMicStateChange?: (enabled: boolean, recording: boolean) => void;
-  onInterruptionStateChange?: (isInterrupting: boolean) => void;
-  showInterruptionButton?: boolean;
 }
 
 export function MicButton({ 
   onTranscriptUpdate, 
-  onMicStateChange, 
-  onInterruptionStateChange,
-  showInterruptionButton = true 
+  onMicStateChange
 }: MicButtonProps) {
   const { isDark } = useTheme();
   const [isMicOn, setIsMicOn] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isToggling, setIsToggling] = useState(false);
-  const [isAISpeaking, setIsAISpeaking] = useState(false);
-  const [isUserInterrupting, setIsUserInterrupting] = useState(false);
+
   const [connectionAttempts, setConnectionAttempts] = useState(0);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const { toast } = useToast();
@@ -40,57 +35,8 @@ export function MicButton({
     return () => {
       console.log('🎤 MicButton unmounting');
       isMountedRef.current = false;
-      // Cleanup interruption manager
-      interruptionManager.cleanup();
     };
   }, []);
-
-  // Initialize interruption manager when media stream is available
-  useEffect(() => {
-    const initializeInterruptionManager = async () => {
-      if (mediaStream && isMicOn) {
-        try {
-          await interruptionManager.initialize(mediaStream);
-          
-          // Set up interruption callbacks
-          interruptionManager.setCallbacks({
-            onInterruptionStart: () => {
-              if (!isMountedRef.current) return;
-              setIsUserInterrupting(true);
-              onInterruptionStateChange?.(true);
-              
-              toast({
-                title: "Interruption Detected",
-                description: "AI stopped speaking. You can now speak.",
-                duration: 2000,
-              });
-            },
-            onInterruptionEnd: () => {
-              if (!isMountedRef.current) return;
-              setIsUserInterrupting(false);
-              onInterruptionStateChange?.(false);
-            },
-            onAISpeakingStart: () => {
-              if (!isMountedRef.current) return;
-              setIsAISpeaking(true);
-              console.log('🤖 AI started speaking');
-            },
-            onAISpeakingEnd: () => {
-              if (!isMountedRef.current) return;
-              setIsAISpeaking(false);
-              console.log('🔇 AI stopped speaking');
-            }
-          });
-          
-          console.log('✅ InterruptionManager initialized in MicButton');
-        } catch (error) {
-          console.error('❌ Failed to initialize InterruptionManager:', error);
-        }
-      }
-    };
-
-    initializeInterruptionManager();
-  }, [mediaStream, isMicOn, onInterruptionStateChange, toast]);
 
   // Notify parent of mic state changes
   useEffect(() => {
@@ -172,22 +118,7 @@ export function MicButton({
           }
         }
         
-        // Set AI speaking state when first audio chunk is received
-        if (data.index === 0) {
-          setIsAISpeaking(true);
-          console.log('🤖 AI started speaking (audio chunk received)');
-        }
-        
-        // Reset AI speaking state when last chunk is received
-        if (data.index === data.total - 1) {
-          // Wait a bit for audio to finish playing
-          setTimeout(() => {
-            if (isMountedRef.current) {
-              setIsAISpeaking(false);
-              console.log('🔇 AI finished speaking (last chunk processed)');
-            }
-          }, 2000); // Wait 2 seconds for audio to finish
-        }
+
         
         audioService.playAudioResponse(audioData, data.index, data.total, data.sessionId);
       } else {
@@ -206,7 +137,6 @@ export function MicButton({
     // Listen for AI thinking state
     socketService.onAIThinking((data) => {
       console.log('🤔 AI is thinking:', data.message);
-      setIsAISpeaking(true);
       // Show thinking indicator - you can add state for this
       toast({
         title: "AI Thinking",
@@ -220,7 +150,6 @@ export function MicButton({
       
       if (data.status === 'started') {
         console.log('⌨️ AI is typing...');
-        setIsAISpeaking(true);
         // Show typing indicator
         toast({
           title: "AI Typing",
@@ -244,7 +173,6 @@ export function MicButton({
     // Listen for AI response text
     socketService.onAIResponseText((data) => {
       console.log('🤖 AI response:', data.text);
-      setIsAISpeaking(true);
       
       // Show AI's text response - you can add state for this
       if (onTranscriptUpdate) {
@@ -261,8 +189,6 @@ export function MicButton({
     socketService.onAIFinished((data) => {
       console.log('✅ AI finished speaking:', data.text);
       if (!isMountedRef.current) return;
-      
-      setIsAISpeaking(false);
       
       // Wait for audio to finish before resetting
       const waitAndReset = async () => {
@@ -524,14 +450,7 @@ export function MicButton({
         // Send interruption to server
         socketService.interrupt();
         
-        // Reset AI speaking state
-        setIsAISpeaking(false);
-        
-        // Cleanup interruption manager
-        interruptionManager.cleanup();
-        
         setIsMicOn(false);
-        setIsUserInterrupting(false);
         
         toast({
           title: "Microphone Off",
@@ -543,29 +462,7 @@ export function MicButton({
     }
   }, [isMicOn, isConnected, isConnecting, connectToServer, toast]);
 
-  // Handle interruption button click
-  const handleInterruptionClick = useCallback(() => {
-    if (!interruptionManager.canInterrupt()) {
-      const stats = interruptionManager.getStats();
-      console.log('⚠️ Cannot interrupt:', stats);
-      
-      if (!stats.isAISpeaking) {
-        toast({
-          title: "No AI Speaking",
-          description: "There's nothing to interrupt",
-        });
-      } else if (stats.timeSinceLastInterruption < 2000) {
-        toast({
-          title: "Cooldown Active",
-          description: "Please wait before interrupting again",
-        });
-      }
-      return;
-    }
-    
-    console.log('🚫 Manual interruption triggered');
-    interruptionManager.triggerInterruption('button');
-  }, [toast]);
+
 
   return (
     <div className="fixed inset-x-0 bottom-40 z-40 flex flex-col items-center gap-4">
@@ -580,24 +477,14 @@ export function MicButton({
             backdrop-blur-xl border rounded-full p-6 shadow-2xl 
             transition-all duration-300 hover:scale-105
             ${!isMicOn ? (isDark ? 'bg-gray-900/50 border-gray-700/50' : 'bg-white/90 border-blue-900/20') : 
-              isUserInterrupting ? (isDark ? 'bg-red-500/20 border-red-500/50' : 'bg-white/90 border-red-600/30') :
-              isAISpeaking ? (isDark ? 'bg-blue-500/20 border-blue-500/50' : 'bg-white/90 border-blue-600/30') :
               (isDark ? 'bg-green-500/20 border-green-500/50' : 'bg-white/90 border-green-600/30')}
             ${(isConnecting || isToggling) ? 'opacity-50' : ''}
-            ${isMicOn && !isAISpeaking ? 'animate-pulse' : ''}
-            ${isUserInterrupting ? 'animate-bounce' : ''}
+            ${isMicOn ? 'animate-pulse' : ''}
           `}>
             {isConnecting ? (
               <Loader2 size={32} className={`animate-spin ${isDark ? 'text-white/80' : 'text-blue-900/80'}`} />
             ) : !isMicOn ? (
               <MicOff size={32} className={isDark ? 'text-gray-500' : 'text-blue-900/80'} />
-            ) : isUserInterrupting ? (
-              <VolumeX size={32} className={isDark ? 'text-red-500' : 'text-red-600'} />
-            ) : isAISpeaking ? (
-              <div className="relative">
-                <Mic size={32} className={isDark ? 'text-blue-500' : 'text-blue-700'} />
-                <div className={`absolute -top-1 -right-1 w-3 h-3 rounded-full animate-ping ${isDark ? 'bg-blue-500' : 'bg-blue-700'}`}></div>
-              </div>
             ) : (
               <Mic size={32} className={isDark ? 'text-green-500' : 'text-green-600'} />
             )}
@@ -607,43 +494,9 @@ export function MicButton({
           <div className={`absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-xs whitespace-nowrap transition-colors duration-300 ${
             isDark ? 'text-white/60' : 'text-blue-900/80'
           }`}>
-            {!isMicOn ? "Mic Off" : 
-             isUserInterrupting ? "Interrupting..." :
-             isAISpeaking ? "AI Speaking..." : "Talking..."}
+            {!isMicOn ? "Mic Off" : "Talking..."}
           </div>
         </button>
-
-        {/* Interruption Button */}
-        {(() => {
-          const shouldShow = showInterruptionButton && isMicOn && isAISpeaking && !isUserInterrupting;
-          if (shouldShow) {
-            console.log('🔍 Interruption button conditions:', { 
-              showInterruptionButton, 
-              isMicOn, 
-              isAISpeaking, 
-              isUserInterrupting,
-              canInterrupt: interruptionManager.canInterrupt()
-            });
-          }
-          return shouldShow;
-        })() && (
-          <button
-            onClick={handleInterruptionClick}
-            disabled={!interruptionManager.canInterrupt()}
-            className={`
-              backdrop-blur-xl border rounded-lg px-4 py-2 shadow-lg
-              transition-all duration-300 hover:scale-105
-              ${isDark ? 'bg-red-500/20 border-red-500/50 text-red-400' : 'bg-white/90 border-red-600/30 text-red-700'}
-              ${!interruptionManager.canInterrupt() ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-100'}
-            `}
-            title="Interrupt AI"
-          >
-            <div className="flex items-center gap-2">
-              <VolumeX size={16} />
-              <span className="text-sm font-medium">Interrupt AI</span>
-            </div>
-          </button>
-        )}
     </div>
   );
 }
