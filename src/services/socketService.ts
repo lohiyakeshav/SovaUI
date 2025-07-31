@@ -587,6 +587,26 @@ class SocketService {
       console.log('🏥 Health check response:', data);
     });
 
+    // Add interruption event listeners
+    this.socket.on('interruption-confirmed', (data) => {
+      console.log('✅ Interruption confirmed by backend:', data);
+    });
+
+    this.socket.on('interruption-partial', (data) => {
+      console.log('🔄 Partial interruption processed:', data);
+    });
+
+    this.socket.on('interruption-handled', (data) => {
+      console.log('✅ Interruption fully handled by backend:', data);
+      // Reset session state after backend confirms interruption is handled
+      this.resetSessionAfterInterruption();
+    });
+
+    // Add session reset confirmation listener
+    this.socket.on('session-reset', (data) => {
+      console.log('✅ Session reset confirmed by backend:', data);
+    });
+
     // Add ai-thinking event listener
     this.socket.on('ai-thinking', (data) => {
       console.log('🤔 AI thinking:', data);
@@ -843,7 +863,40 @@ class SocketService {
 
   interrupt() {
     if (!this.socket) return;
+    console.log('🚫 SENDING INTERRUPT SIGNAL TO BACKEND');
     this.socket.emit('interrupt');
+    
+    // Reset session state after interruption
+    this.resetSessionAfterInterruption();
+  }
+
+  private resetSessionAfterInterruption() {
+    console.log('🔄 RESETTING SESSION STATE AFTER INTERRUPTION');
+    
+    // Reset audio completion flag
+    this._audioCompleted = false;
+    
+    // Clear processed chunks
+    this._processedChunks.clear();
+    this._duplicateCount = 0;
+    
+    // Reset audio chunk count
+    this.audioChunkCount = 0;
+    
+    // Clear any pending audio chunks
+    this.audioChunks = [];
+    
+    // Send a session reset signal to the backend
+    if (this.socket) {
+      console.log('🔄 SENDING SESSION RESET TO BACKEND');
+      this.socket.emit('reset-session');
+      
+      // Also try to start a new conversation to ensure clean state
+      setTimeout(() => {
+        console.log('🔄 STARTING NEW CONVERSATION AFTER INTERRUPTION');
+        this.startConversation();
+      }, 100);
+    }
   }
 
   onSessionStatus(callback: (data: SessionStatus) => void) {
@@ -1066,10 +1119,40 @@ class SocketService {
     // Reset audio chunk count
     this.audioChunkCount = 0;
     
+    // Clear any pending audio chunks
+    this.audioChunks = [];
+    
     // Don't disconnect or clear connection state
     // This allows for continuous conversation without losing the socket connection
     
     console.log('✅ SOCKET SERVICE RESET COMPLETE');
+  }
+
+  // Method to force a complete session reset (more aggressive than resetForContinuousConversation)
+  public forceSessionReset(): void {
+    console.log('🔄 FORCING COMPLETE SESSION RESET');
+    
+    // Reset all internal state
+    this._audioCompleted = false;
+    this._processedChunks.clear();
+    this._duplicateCount = 0;
+    this.audioChunkCount = 0;
+    this.audioChunks = [];
+    
+    // Send multiple reset signals to backend
+    if (this.socket) {
+      console.log('🔄 SENDING MULTIPLE RESET SIGNALS TO BACKEND');
+      this.socket.emit('reset-session');
+      this.socket.emit('end-conversation');
+      
+      // Start a new conversation after a short delay
+      setTimeout(() => {
+        console.log('🔄 STARTING FRESH CONVERSATION');
+        this.startConversation();
+      }, 200);
+    }
+    
+    console.log('✅ FORCE SESSION RESET COMPLETE');
   }
 
   // Configuration and performance methods
