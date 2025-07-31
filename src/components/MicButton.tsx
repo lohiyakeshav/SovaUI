@@ -186,24 +186,41 @@ export function MicButton({ onTranscriptUpdate, onMicStateChange }: MicButtonPro
       
       setIsAISpeaking(false);
       
-      // Reset services for continuous conversation
-      socketService.resetForContinuousConversation();
-      audioService.resetForContinuousConversation();
+      // Wait for audio to finish before resetting
+      const waitAndReset = async () => {
+        console.log('🎵 Waiting for audio to finish before reset...');
+        
+        // Wait for audio to finish (max 30 seconds)
+        const audioFinished = await audioService.waitForAudioToFinish(30000);
+        
+        if (audioFinished) {
+          console.log('🎵 Audio finished naturally, proceeding with reset');
+        } else {
+          console.log('⏰ Audio timeout reached, forcing reset');
+        }
+        
+        // Reset services for continuous conversation
+        socketService.resetForContinuousConversation();
+        audioService.resetForContinuousConversation();
+        
+        // Reset speech recognition for new query but keep it active
+        speechRecognition.resetForNewQuery();
+        
+        // Ensure speech recognition is still active for continuous conversation
+        if (isMicOn && speechRecognition.isAvailable() && !speechRecognition.isCurrentlyListening()) {
+          console.log('🔄 RESTARTING SPEECH RECOGNITION FOR CONTINUOUS CONVERSATION');
+          speechRecognition.start();
+        }
+        
+        // Hide thinking indicator - you can add state for this
+        toast({
+          title: "AI Finished",
+          description: "Response complete",
+        });
+      };
       
-      // Reset speech recognition for new query but keep it active
-      speechRecognition.resetForNewQuery();
-      
-      // Ensure speech recognition is still active for continuous conversation
-      if (isMicOn && speechRecognition.isAvailable() && !speechRecognition.isCurrentlyListening()) {
-        console.log('🔄 RESTARTING SPEECH RECOGNITION FOR CONTINUOUS CONVERSATION');
-        speechRecognition.start();
-      }
-      
-      // Hide thinking indicator - you can add state for this
-      toast({
-        title: "AI Finished",
-        description: "Response complete",
-      });
+      // Start waiting after a short delay to allow audio to finish naturally
+      setTimeout(waitAndReset, 500);
     });
 
     socketService.onError((error) => {

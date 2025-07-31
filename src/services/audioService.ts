@@ -38,8 +38,8 @@ export class AudioService {
     dynamicVolume: true, // Enable dynamic volume adjustment
     strictSequential: true, // Ensure strict sequential playback
     maxConcurrentSources: 1, // Only allow 1 source at a time
-    sessionTimeout: 10000, // Increased from 5000ms to 10000ms for better session management
-    chunkTimeout: 5000, // Increased from 3000ms to 5000ms for larger chunks
+    sessionTimeout: 30000, // Increased to 30 seconds for better session management
+    chunkTimeout: 15000, // Increased to 15 seconds for larger chunks and longer audio
     // New backend integration settings
     backendSessionTimeout: 600000, // 10 minutes - matches backend activity timeout
     sessionRefreshInterval: 1800000, // 30 minutes - matches backend session refresh
@@ -966,24 +966,30 @@ export class AudioService {
       
       source.onended = cleanup;
       
-      // Cleanup timeout - increased to prevent premature stopping
-      // Only set timeout if we have a valid duration
+      // Cleanup timeout - only set if we have a valid duration and no natural ending
+      // Increased timeout significantly to prevent premature stopping
       if (duration > 0) {
+        const timeoutDuration = Math.max((duration * 1000) + 30000, 60000); // At least 60 seconds or duration + 30s
         setTimeout(() => {
           try {
-            // Only stop if the source hasn't ended naturally
-            source.stop();
-            this.log(`⏰ FORCE STOPPING: chunk ${chunkIndex} after timeout`);
+            // Only stop if the source hasn't ended naturally and is still playing
+            // Also check if we're still in the same session to avoid stopping old audio
+            if (source.buffer && !source.onended && this.currentSessionId === sessionId) {
+              source.stop();
+              this.log(`⏰ FORCE STOPPING: chunk ${chunkIndex} after extended timeout (${timeoutDuration}ms)`);
+            } else {
+              this.log(`⏰ Source already ended naturally for chunk ${chunkIndex} or session changed`);
+            }
             if (onEnded) {
               onEnded();
             }
           } catch (error) {
-            this.log(`⏰ Source already stopped for chunk ${chunkIndex}`);
+            this.log(`⏰ Source already stopped for chunk ${chunkIndex}: ${error}`);
             if (onEnded) {
               onEnded();
             }
           }
-        }, (duration * 1000) + 5000); // Increased to 5000ms to prevent premature cutoff
+        }, timeoutDuration);
       }
       
     } catch (error) {
@@ -1318,14 +1324,22 @@ export class AudioService {
     }, finalTimeout);
     
     // Set up additional cleanup timeout for session management
+    // Only cleanup if no audio is currently playing and no chunks in queue
     setTimeout(() => {
       const timeSinceLastChunk = Date.now() - this.lastChunkTime;
-      if (timeSinceLastChunk > this.config.chunkTimeout && this.audioQueue.length === 0) {
+      const hasActiveAudio = this.getTotalActiveSources() > 0 || this.isPlayingSequentially;
+      
+      if (timeSinceLastChunk > this.config.chunkTimeout && 
+          this.audioQueue.length === 0 && 
+          !hasActiveAudio) {
         const timestamp = this.getTimestamp();
-        this.log(`${timestamp} 🧹 CLEANUP: No chunks received for ${timeSinceLastChunk}ms, clearing session state`);
+        this.log(`${timestamp} 🧹 CLEANUP: No chunks received for ${timeSinceLastChunk}ms, no active audio, clearing session state`);
         this.sessionChunksSeen.clear();
         this.consecutiveChunkCount = 0;
         this.lastChunkTime = 0;
+      } else if (hasActiveAudio) {
+        const timestamp = this.getTimestamp();
+        this.log(`${timestamp} 🎵 SKIPPING CLEANUP: Active audio detected (sources: ${this.getTotalActiveSources()}, sequential: ${this.isPlayingSequentially})`);
       }
     }, this.config.chunkTimeout);
   }
@@ -1368,9 +1382,18 @@ export class AudioService {
         ? (this.performanceMetrics.successfulDecodes / this.performanceMetrics.totalChunksProcessed * 100).toFixed(1) + '%'
         : '0%',
       averageDecodeTimeMs: this.performanceMetrics.averageDecodeTime.toFixed(1),
-      isCurrentlyPlaying: this.currentAudioSource !== null,
+      isCurrentlyPlaying: this.isAudioPlaying(),
       queueLength: this.audioQueue.length,
       activeSources: this.getTotalActiveSources(),
+      // Detailed audio state for debugging
+      audioState: {
+        isPlaying: this.isPlaying,
+        isPlayingSequentially: this.isPlayingSequentially,
+        hasCurrentSource: this.currentAudioSource !== null,
+        hasActiveSources: this.getTotalActiveSources() > 0,
+        hasQueueItems: this.audioQueue.length > 0,
+        sessionSourcesCount: Array.from(this.sessionAudioSources.values()).reduce((sum, sources) => sum + sources.length, 0)
+      },
       // Backend integration metrics
       sessionDurationMs: this.performanceMetrics.sessionDuration,
       sessionDurationFormatted: this.formatDuration(this.performanceMetrics.sessionDuration),
@@ -1406,7 +1429,20 @@ export class AudioService {
 
   // Check if audio is currently playing
   isAudioPlaying(): boolean {
-    return this.currentAudioSource !== null || this.getTotalActiveSources() > 0;
+    const hasActiveSources = this.getTotalActiveSources() > 0;
+    const isSequentiallyPlaying = this.isPlayingSequentially;
+    const hasCurrentSource = this.currentAudioSource !== null;
+    const hasQueueItems = this.audioQueue.length > 0;
+    
+    const isPlaying = this.isPlaying || isSequentiallyPlaying || hasCurrentSource || hasActiveSources || hasQueueItems;
+    
+    // Log detailed audio state for debugging
+    if (this.config.verboseLogging) {
+      const timestamp = this.getTimestamp();
+      this.log(`${timestamp} 🎵 AUDIO STATE CHECK: playing=${isPlaying}, isPlaying=${this.isPlaying}, sequential=${isSequentiallyPlaying}, currentSource=${hasCurrentSource}, activeSources=${hasActiveSources}, queueLength=${hasQueueItems}`);
+    }
+    
+    return isPlaying;
   }
 
   // Update configuration
@@ -1612,15 +1648,48 @@ export class AudioService {
     });
   }
 
+  // Method to wait for audio to finish playing
+  public async waitForAudioToFinish(maxWaitTime: number = 30000): Promise<boolean> {
+    const startTime = Date.now();
+    const checkInterval = 500; // Check every 500ms
+    
+    while (Date.now() - startTime < maxWaitTime) {
+      if (!this.isAudioPlaying()) {
+        const timestamp = this.getTimestamp();
+        this.log(`${timestamp} ✅ AUDIO FINISHED: Waited ${Date.now() - startTime}ms`);
+        return true;
+      }
+      
+      // Wait before next check
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+    
+    const timestamp = this.getTimestamp();
+    this.log(`${timestamp} ⏰ AUDIO TIMEOUT: Waited ${maxWaitTime}ms, forcing reset`);
+    return false;
+  }
+
   // Method to reset audio service for continuous conversation
   public resetForContinuousConversation(): void {
     const timestamp = this.getTimestamp();
     this.log(`${timestamp} 🔄 RESETTING FOR CONTINUOUS CONVERSATION`);
     
-    // Don't stop current audio - let it finish naturally
-    // This prevents cutting off audio mid-response
+    // Check if there's currently active audio
+    const hasActiveAudio = this.getTotalActiveSources() > 0 || this.isPlayingSequentially;
     
-    // Only clear session state, not active audio
+    if (hasActiveAudio) {
+      this.log(`${timestamp} 🎵 SKIPPING RESET: Active audio detected (sources: ${this.getTotalActiveSources()}, sequential: ${this.isPlayingSequentially})`);
+      // Only clear session tracking, don't interfere with playback
+      this.sessionChunksSeen.clear();
+      this.sessionStartTime = 0;
+      this.currentSessionId = null;
+      
+      // Don't clear queue or stop playback - let current audio finish
+      this.log(`${timestamp} ✅ CONTINUOUS CONVERSATION RESET COMPLETE (preserving active audio)`);
+      return;
+    }
+    
+    // No active audio, safe to do full reset
     this.sessionChunksSeen.clear();
     this.sessionStartTime = 0;
     this.currentSessionId = null;
