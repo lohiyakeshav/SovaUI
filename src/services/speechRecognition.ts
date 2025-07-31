@@ -36,8 +36,10 @@ export class SpeechRecognitionService {
       let fullTranscript = '';
       let hasFinalResult = false;
       
-      for (let i = 0; i < event.results.length; i++) {
-        const result = event.results[i];
+      // Only process the most recent result to prevent accumulation
+      const lastResultIndex = event.results.length - 1;
+      if (lastResultIndex >= 0) {
+        const result = event.results[lastResultIndex];
         const transcript = result[0].transcript;
         const isFinal = result.isFinal;
         
@@ -45,10 +47,8 @@ export class SpeechRecognitionService {
           hasFinalResult = true;
         }
         
-        fullTranscript += transcript + ' ';
+        fullTranscript = transcript.trim();
       }
-      
-      fullTranscript = fullTranscript.trim();
       
       console.log('🎤 USER SPEAKING:', { 
         fullTranscript, 
@@ -180,6 +180,11 @@ export class SpeechRecognitionService {
     return !!this.recognition;
   }
 
+  // Public method to check if speech recognition is currently listening
+  isCurrentlyListening(): boolean {
+    return this.isListening;
+  }
+
   private lastSentTranscript: string = '';
   private lastUpdateTime: number = 0;
 
@@ -301,7 +306,20 @@ export class SpeechRecognitionService {
   clearHistory() {
     this.transcriptHistory.clear();
     this.lastFinalTranscript = '';
+    this.currentTranscript = '';
+    this.hasSentFinalTranscript = false;
+    this.lastSentTranscript = '';
+    this.lastUpdateTime = 0;
     console.log('🧹 TRANSCRIPT HISTORY CLEARED');
+  }
+
+  // Method to reset for new query (called after AI finishes speaking)
+  resetForNewQuery() {
+    this.clearHistory();
+    this.clearSilenceTimeout();
+    // Don't set isListening = false - keep listening for continuous conversation
+    this.hasSentFinalTranscript = false; // Reset flag for new query
+    console.log('🔄 SPEECH RECOGNITION RESET FOR NEW QUERY');
   }
 }
 

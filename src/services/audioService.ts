@@ -25,7 +25,7 @@ export class AudioService {
   
   // Enhanced configuration for backend integration with adaptive chunk optimization
   private config = {
-    defaultPlaybackRate: 0.5, // Reduced from 0.8 to 0.5 for more natural, slower voice speedthi
+    defaultPlaybackRate: 0.5, // Reduced from 0.8 to 0.5 for more natural, slower voice speed
     volume: 0.9, // Increased for better audibility
     chunkDelay: 10, // Increased from 5ms to 10ms for better chunk separation
     maxQueueSize: 50, // Reduced from 100 since chunks are larger now
@@ -38,8 +38,8 @@ export class AudioService {
     dynamicVolume: true, // Enable dynamic volume adjustment
     strictSequential: true, // Ensure strict sequential playback
     maxConcurrentSources: 1, // Only allow 1 source at a time
-    sessionTimeout: 5000, // 5 seconds timeout for session management
-    chunkTimeout: 3000, // Increased from 2000ms for larger chunks
+    sessionTimeout: 10000, // Increased from 5000ms to 10000ms for better session management
+    chunkTimeout: 5000, // Increased from 3000ms to 5000ms for larger chunks
     // New backend integration settings
     backendSessionTimeout: 600000, // 10 minutes - matches backend activity timeout
     sessionRefreshInterval: 1800000, // 30 minutes - matches backend session refresh
@@ -457,31 +457,39 @@ export class AudioService {
     const waitTime = this.getQueueWaitTime();
     const timeSinceLastChunk = Date.now() - this.lastChunkTime;
     
+    // Get total chunks expected from the first chunk
+    const totalChunksExpected = sortedChunks[0]?.total || 1;
+    
     // CONSERVATIVE APPROACH: Wait for better chunk sequences to prevent conflicts
-    const hasEnoughConsecutive = consecutiveCount >= 3; // Reduced from 5 to 3 for faster response
+    const hasEnoughConsecutive = consecutiveCount >= 2; // Reduced from 3 to 2 for faster response
     const hasReasonableGap = maxGap <= 1; // Reduced from 2 to 1 chunk
-    const hasBeenWaitingTooLong = waitTime > 1000; // Reduced from 3000ms to 1000ms
-    const hasEnoughTotalChunks = this.audioQueue.length >= 3; // Reduced from 8 to 3
-    const hasManyChunks = this.audioQueue.length >= 5; // Reduced from 15 to 5
+    const hasBeenWaitingTooLong = waitTime > 500; // Reduced from 1000ms to 500ms
+    const hasEnoughTotalChunks = this.audioQueue.length >= 2; // Reduced from 3 to 2
+    const hasManyChunks = this.audioQueue.length >= 3; // Reduced from 5 to 3
     const hasRecentChunks = timeSinceLastChunk < 100; // Reduced from 200ms to 100ms
-    const hasConsecutiveChunks = this.consecutiveChunkCount >= 3; // Reduced from 5 to 3
+    const hasConsecutiveChunks = this.consecutiveChunkCount >= 2; // Reduced from 3 to 2
+    
+    // Special case: If we have all chunks for a short response, start immediately
+    const hasAllChunksForShortResponse = this.audioQueue.length === totalChunksExpected && totalChunksExpected <= 3;
     
     // Start playback if we have enough consecutive chunks with small gaps,
     // or if we've been waiting too long and have enough total chunks,
     // or if we have many chunks regardless of gaps (more aggressive)
     // or if we have recent consecutive chunks (more responsive)
+    // or if we have all chunks for a short response
     const shouldStartPlayback = (hasEnoughConsecutive && hasReasonableGap) || 
                                (hasBeenWaitingTooLong && hasEnoughTotalChunks) ||
                                hasManyChunks ||
-                               (hasRecentChunks && hasConsecutiveChunks);
+                               (hasRecentChunks && hasConsecutiveChunks) ||
+                               hasAllChunksForShortResponse;
     
-    this.log(`${timestamp} 📈 ANALYSIS: consecutive: ${consecutiveCount}, maxGap: ${maxGap}, waitTime: ${waitTime}ms, queue: ${this.audioQueue.length}, manyChunks: ${hasManyChunks}, recentChunks: ${hasRecentChunks}ms, consecutiveCount: ${this.consecutiveChunkCount}, shouldStart: ${shouldStartPlayback}`);
+    this.log(`${timestamp} 📈 ANALYSIS: consecutive: ${consecutiveCount}, maxGap: ${maxGap}, waitTime: ${waitTime}ms, queue: ${this.audioQueue.length}, manyChunks: ${hasManyChunks}, recentChunks: ${hasRecentChunks}ms, consecutiveCount: ${this.consecutiveChunkCount}, shouldStart: ${shouldStartPlayback}, totalExpected: ${totalChunksExpected}, hasAllChunks: ${hasAllChunksForShortResponse}`);
     
     if (shouldStartPlayback) {
-      this.log(`${timestamp} 🎯 STARTING PLAYBACK: ${consecutiveCount} consecutive chunks, max gap: ${maxGap}, wait time: ${waitTime}ms, queue: ${this.audioQueue.length}, many chunks: ${hasManyChunks}`);
+      this.log(`${timestamp} 🎯 STARTING PLAYBACK: ${consecutiveCount} consecutive chunks, max gap: ${maxGap}, wait time: ${waitTime}ms, queue: ${this.audioQueue.length}, many chunks: ${hasManyChunks}, total expected: ${totalChunksExpected}`);
       this.playSequentialQueue();
     } else {
-      this.log(`${timestamp} ⏳ WAITING: ${consecutiveCount} consecutive chunks, max gap: ${maxGap}, wait time: ${waitTime}ms, queue: ${this.audioQueue.length}, many chunks: ${hasManyChunks}`);
+      this.log(`${timestamp} ⏳ WAITING: ${consecutiveCount} consecutive chunks, max gap: ${maxGap}, wait time: ${waitTime}ms, queue: ${this.audioQueue.length}, many chunks: ${hasManyChunks}, total expected: ${totalChunksExpected}`);
     }
   }
 
@@ -959,20 +967,24 @@ export class AudioService {
       source.onended = cleanup;
       
       // Cleanup timeout - increased to prevent premature stopping
-      setTimeout(() => {
-        try {
-          source.stop();
-          this.log(`⏰ FORCE STOPPING: chunk ${chunkIndex} after timeout`);
-          if (onEnded) {
-            onEnded();
+      // Only set timeout if we have a valid duration
+      if (duration > 0) {
+        setTimeout(() => {
+          try {
+            // Only stop if the source hasn't ended naturally
+            source.stop();
+            this.log(`⏰ FORCE STOPPING: chunk ${chunkIndex} after timeout`);
+            if (onEnded) {
+              onEnded();
+            }
+          } catch (error) {
+            this.log(`⏰ Source already stopped for chunk ${chunkIndex}`);
+            if (onEnded) {
+              onEnded();
+            }
           }
-        } catch (error) {
-          this.log(`⏰ Source already stopped for chunk ${chunkIndex}`);
-          if (onEnded) {
-            onEnded();
-          }
-        }
-      }, (duration * 1000) + 1000); // Increased from 200ms to 1000ms
+        }, (duration * 1000) + 5000); // Increased to 5000ms to prevent premature cutoff
+      }
       
     } catch (error) {
       console.error('❌ Error creating audio source:', error);
@@ -1128,7 +1140,14 @@ export class AudioService {
     // Handle new audio sessions - stop previous audio when new session starts
     if (sessionId && sessionId !== this.currentSessionId) {
       this.log(`${timestamp} 🔄 NEW SESSION: ${sessionId?.substring(0, 8)}... (was: ${this.currentSessionId?.substring(0, 8) || 'none'}), stopping ${this.getTotalActiveSources()} active sources`);
-      this.stopCurrentAudio();
+      
+      // Only stop audio if we're not in the middle of playing a response
+      if (!this.isPlayingSequentially && this.getTotalActiveSources() === 0) {
+        this.stopCurrentAudio();
+      } else {
+        this.log(`${timestamp} ⏸️ KEEPING CURRENT AUDIO: Playing response in progress`);
+      }
+      
       this.currentSessionId = sessionId;
       this.cleanupSession(); // Use new cleanup method
       
@@ -1139,9 +1158,17 @@ export class AudioService {
     // Detect overlapping responses within same session (backend bug)
     // If we receive chunk 0 again after already having chunks, it's a new response
     if (sessionId === this.currentSessionId && index === 0 && this.sessionChunksSeen.size > 0) {
-      this.log(`${timestamp} ⚠️ OVERLAP DETECTED: chunk 0 received again in session ${sessionId?.substring(0, 8)}..., had chunks: [${Array.from(this.sessionChunksSeen).sort().join(',')}], stopping ${this.getTotalActiveSources()} sources`);
-      this.stopCurrentAudio();
-      this.cleanupSession(); // Use new cleanup method
+      this.log(`${timestamp} ⚠️ OVERLAP DETECTED: chunk 0 received again in session ${sessionId?.substring(0, 8)}..., had chunks: [${Array.from(this.sessionChunksSeen).sort().join(',')}], checking if current audio is finished`);
+      
+      // Only stop current audio if it's been more than 2 seconds since last chunk
+      const timeSinceLastChunk = Date.now() - this.lastChunkTime;
+      if (timeSinceLastChunk > 2000) {
+        this.log(`${timestamp} 🛑 STOPPING AUDIO: ${timeSinceLastChunk}ms since last chunk, treating as new response`);
+        this.stopCurrentAudio();
+        this.cleanupSession(); // Use new cleanup method
+      } else {
+        this.log(`${timestamp} ⏸️ KEEPING AUDIO: Only ${timeSinceLastChunk}ms since last chunk, continuing current response`);
+      }
       
       // Track turn for analytics
       if (this.config.turnTracking) {
@@ -1492,7 +1519,7 @@ export class AudioService {
     
     // Add cooldown to prevent excessive stuck audio checks
     const timeSinceLastCheck = now - this.lastStuckAudioCheck;
-    if (timeSinceLastCheck < 5000) { // 5 second cooldown
+    if (timeSinceLastCheck < 10000) { // Increased from 5000ms to 10000ms
       return false;
     }
     
@@ -1501,7 +1528,7 @@ export class AudioService {
     
     // Only check for stuck audio if we have active sources and a reasonable time has passed
     // Increased timeout to be less aggressive and prevent false positives
-    const hasStuckAudio = activeSources > 0 && timeSinceLastChunk > this.config.chunkTimeout * 2;
+    const hasStuckAudio = activeSources > 0 && timeSinceLastChunk > this.config.chunkTimeout * 3; // Increased from 2x to 3x
     
     if (hasStuckAudio) {
       console.log(`${timestamp} 🔧 STUCK AUDIO DETECTED: ${activeSources} sources, ${timeSinceLastChunk}ms since last chunk`);
@@ -1590,15 +1617,15 @@ export class AudioService {
     const timestamp = this.getTimestamp();
     this.log(`${timestamp} 🔄 RESETTING FOR CONTINUOUS CONVERSATION`);
     
-    // Clear any pending audio
-    this.stopCurrentAudio();
+    // Don't stop current audio - let it finish naturally
+    // This prevents cutting off audio mid-response
     
-    // Reset session state
+    // Only clear session state, not active audio
     this.sessionChunksSeen.clear();
     this.sessionStartTime = 0;
     this.currentSessionId = null;
     
-    // Clear audio queue
+    // Clear audio queue for next response
     this.audioQueue = [];
     this.isPlayingSequentially = false;
     this.playbackPromise = null;

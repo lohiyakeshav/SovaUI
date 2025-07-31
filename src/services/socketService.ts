@@ -1066,6 +1066,9 @@ class SocketService {
     // Reset audio chunk count
     this.audioChunkCount = 0;
     
+    // Don't disconnect or clear connection state
+    // This allows for continuous conversation without losing the socket connection
+    
     console.log('✅ SOCKET SERVICE RESET COMPLETE');
   }
 

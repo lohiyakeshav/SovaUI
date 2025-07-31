@@ -190,8 +190,14 @@ export function MicButton({ onTranscriptUpdate, onMicStateChange }: MicButtonPro
       socketService.resetForContinuousConversation();
       audioService.resetForContinuousConversation();
       
-      // Clear speech recognition history after AI response to prepare for next query
-      speechRecognition.clearHistory();
+      // Reset speech recognition for new query but keep it active
+      speechRecognition.resetForNewQuery();
+      
+      // Ensure speech recognition is still active for continuous conversation
+      if (isMicOn && speechRecognition.isAvailable() && !speechRecognition.isCurrentlyListening()) {
+        console.log('🔄 RESTARTING SPEECH RECOGNITION FOR CONTINUOUS CONVERSATION');
+        speechRecognition.start();
+      }
       
       // Hide thinking indicator - you can add state for this
       toast({
